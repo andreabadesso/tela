@@ -1,0 +1,40 @@
+services:
+  agent:
+    build: .
+    env_file: .env
+    volumes:
+      - vault-data:/data/vault
+      - ssh-keys:/root/.ssh:ro
+      - agent-db:/data/db
+      - transcripts:/data/transcripts
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  chromadb:
+    image: chromadb/chroma
+    volumes:
+      - chroma-data:/chroma/chroma
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  vault-data:
+  ssh-keys:
+  agent-db:
+  transcripts:
+  chroma-data:

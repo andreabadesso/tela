@@ -1,0 +1,2 @@
+-- Add onboarded flag to users
+ALTER TABLE users ADD COLUMN onboarded INTEGER NOT NULL DEFAULT 0;
