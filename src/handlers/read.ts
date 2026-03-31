@@ -10,7 +10,7 @@ export async function handleRead(
   const arg = text.trim();
 
   if (!arg) {
-    await telegram.send('Uso: /read <caminho ou termo>\nExemplo: /read Work/03 - Roadmap 90 Dias.md', { replyTo: messageId });
+    await telegram.send('Uso: /read <caminho ou termo>\nExemplo: /read Notes/Roadmap.md', { replyTo: messageId });
     return;
   }
 

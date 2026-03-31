@@ -100,61 +100,41 @@ const SCHEDULE_TEMPLATES = [
   {
     name: 'Morning Briefing',
     cron_expression: '0 8 * * *',
-    prompt: 'Generate morning briefing with priorities, attention items, meetings, and carry-over from yesterday.',
+    prompt: 'Search the vault for today\'s daily note and yesterday\'s note. Check the calendar for today\'s meetings. Generate a morning briefing with: priorities, attention items, meetings, and carry-over from yesterday.',
   },
   {
-    name: 'Midday Check',
-    cron_expression: '0 12 * * *',
-    prompt: 'Quick midday status: anything urgent or blocked?',
+    name: 'End of Day Reflection',
+    cron_expression: '0 18 * * 1-5',
+    prompt: 'Ask the user how their day went. Based on their response, update today\'s daily note with a summary. Use vault tools to discover the right paths — search for existing daily notes to match the convention.',
   },
   {
-    name: 'Daily Digest',
-    cron_expression: '0 20 * * *',
-    prompt: 'End of day digest: what happened, what\'s pending.',
-  },
-  {
-    name: 'End of Day',
-    cron_expression: '0 21 * * *',
-    prompt: 'Prompt for end of day reflection and review.',
-  },
-  {
-    name: 'Week Ahead',
-    cron_expression: '0 20 * * 0',
-    prompt: 'Plan next week based on calendar, roadmap, and pending items.',
-  },
-  {
-    name: 'Week Review',
+    name: 'Weekly Review',
     cron_expression: '0 17 * * 5',
-    prompt: 'Weekly review: what shipped, metrics, highlights, concerns.',
+    prompt: 'Read this week\'s daily notes from the vault. Generate a weekly review: what got done, what\'s pending, decisions made, patterns noticed, and suggestions for next week. Save the review to the vault alongside other weekly reviews.',
+  },
+  {
+    name: 'Week Ahead Planning',
+    cron_expression: '0 20 * * 0',
+    prompt: 'Check the calendar for next week\'s meetings. Search the vault for pending items and roadmap. Generate a week-ahead plan with focus areas per day.',
   },
   {
     name: 'Meeting Prep',
     cron_expression: '*/15 * * * *',
-    prompt: 'Check for meetings in next 30 minutes and prep notes.',
+    prompt: 'Check calendar for meetings starting in the next 30 minutes. For each, search the vault for context about attendees and topics. Send a prep summary only if a meeting is found.',
   },
   {
-    name: 'PR Stale Alerts',
+    name: 'Stale PR Alerts',
     cron_expression: '0 10 * * *',
-    prompt: 'Check for PRs open more than 48h without review.',
-  },
-  {
-    name: 'Blocked Tickets',
-    cron_expression: '0 10 * * *',
-    prompt: 'Check for Jira tickets blocked more than 24h.',
-  },
-  {
-    name: 'ShipLens Anomaly',
-    cron_expression: '0 */4 * * *',
-    prompt: 'Check ShipLens for metric anomalies.',
+    prompt: 'Check for PRs open more than 48h without review. Alert only if stale PRs are found.',
   },
   {
     name: 'Decision Review',
     cron_expression: '0 9 * * 1',
-    prompt: 'Review decisions from last 30 days: outcomes match expectations?',
+    prompt: 'Search the vault for decisions with review dates. For any due or overdue, prompt the user to review whether the decision still holds.',
   },
   {
-    name: 'Vault Health',
+    name: 'Vault Health Check',
     cron_expression: '0 9 * * 6',
-    prompt: 'Run vault health check: orphans, broken links, stale items.',
+    prompt: 'Scan the vault for orphaned notes (no inbound links), broken wikilinks, empty files, and stale content (not updated in 60+ days). Generate a health report.',
   },
 ];

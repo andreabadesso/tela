@@ -221,52 +221,23 @@ Also, at the very end, in a section called "## Meta", include:
     const noteContent = result.text;
     const dateStr = todayDateStr();
 
-    // Write the full meeting note
-    const sanitizedTitle = meetingTitle.replace(/[/\\:*?"<>|]/g, '-');
-    const meetingNotePath = `Work/Meetings/${dateStr} ${sanitizedTitle}.md`;
+    // Let the agent save the meeting note and do any post-processing
+    // using vault tools. The agent decides where to write based on the
+    // vault's existing structure — no hardcoded paths.
+    const saveResult = await this.agent.process(
+      { text: noteContent, source: 'event' },
+      `You just processed a meeting transcript. The structured note is above.
 
-    try {
-      await this.vault.write_note(meetingNotePath, noteContent);
-      console.log(`[transcript] Written meeting note: ${meetingNotePath}`);
-    } catch (err) {
-      console.error('[transcript] Failed to write meeting note:', err);
-    }
+Save it to the vault using vault tools:
+1. Write the full note as a new file. Pick an appropriate path based on existing vault structure (search for other meeting notes to match the convention). Use the date ${dateStr} and title "${meetingTitle}" in the filename.
+2. If the vault has person/people docs, update them for each attendee: ${attendeesList.join(', ')}
+3. If the vault has a decisions log, append any decisions from this meeting.
+4. Append a summary to today's daily note if one exists.
 
-    // Update Pessoas docs for each attendee
-    for (const attendee of attendeesList) {
-      try {
-        const pessoaPath = `Work/Pessoas/${attendee}.md`;
-        const appendText = `\n\n### ${dateStr} — ${meetingTitle}\n- Participou da reuniao\n- Ver: [[${meetingNotePath}]]`;
-        await this.vault.append_to_note(pessoaPath, appendText);
-      } catch (err) {
-        console.error(`[transcript] Failed to update Pessoas/${attendee}:`, err);
-      }
-    }
+Use search_vault and list_notes to discover the vault's folder structure before writing. Do not assume any specific paths exist.
 
-    // Extract decisions and append to Decisoes.md
-    const decisionsMatch = noteContent.match(/## Decisoes\n([\s\S]*?)(?=\n## |$)/i);
-    if (decisionsMatch) {
-      try {
-        const decisionsText = `\n### ${dateStr} — ${meetingTitle}\n${decisionsMatch[1].trim()}`;
-        await this.vault.append_to_note('Work/Decisoes.md', decisionsText);
-      } catch (err) {
-        console.error('[transcript] Failed to append to Decisoes.md:', err);
-      }
-    }
-
-    // Append summary to daily note
-    try {
-      const summaryMatch = noteContent.match(/## Resumo\n([\s\S]*?)(?=\n## |$)/i);
-      const summaryText = summaryMatch
-        ? summaryMatch[1].trim()
-        : `Reuniao processada: ${meetingTitle}`;
-      await this.vault.append_to_note(
-        `Daily/${dateStr}.md`,
-        `\n\n### Reuniao: ${meetingTitle}\n${summaryText}\n- Ver: [[${meetingNotePath}]]`,
-      );
-    } catch (err) {
-      console.error('[transcript] Failed to append to daily note:', err);
-    }
+After saving, respond with a short summary of what you saved and where. Portuguese.`,
+    );
 
     // Git commit + push
     try {
@@ -275,26 +246,13 @@ Also, at the very end, in a section called "## Meta", include:
       console.error('[transcript] Git push failed:', err);
     }
 
-    // Extract counts for Telegram notification
-    const decisionsCount = (noteContent.match(/^- .+: decided by/gim) ?? []).length;
-    const actionItemsCount = (noteContent.match(/^- \[ \]/gm) ?? []).length;
-    const oneLineSummary =
-      noteContent.match(/ONE_LINE_SUMMARY:\s*(.+)/i)?.[1]?.trim() ??
-      `Reuniao "${meetingTitle}" processada`;
-
     // Send Telegram notification
-    const telegramMsg = [
-      `<b>Reuniao processada</b>`,
-      ``,
-      oneLineSummary,
-      ``,
-      `Decisoes: ${decisionsCount}`,
-      `Action items: ${actionItemsCount}`,
-      `Salvo em: ${meetingNotePath}`,
-    ].join('\n');
-
     try {
-      await this.telegram.send(telegramMsg, { parseMode: 'HTML' });
+      const telegramMsg = `<b>Reuniao processada:</b> ${meetingTitle}\n\n${saveResult.text}`;
+      await this.telegram.send(
+        telegramMsg.length > 4000 ? telegramMsg.slice(0, 3900) + '\n<i>(truncado)</i>' : telegramMsg,
+        { parseMode: 'HTML' },
+      );
     } catch (err) {
       console.error('[transcript] Failed to send Telegram notification:', err);
     }
