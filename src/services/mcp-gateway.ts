@@ -42,7 +42,13 @@ export class McpGateway {
    */
   private async getOrCreateClient(connectionId: string, url: string, token: string): Promise<McpClientEntry> {
     const existing = this.clientPool.get(connectionId);
-    if (existing) return existing;
+    // Reuse cached client if it's less than 5 minutes old
+    if (existing && (Date.now() - existing.connectedAt) < 5 * 60_000) return existing;
+    // Evict stale client
+    if (existing) {
+      try { await existing.client.close(); } catch { /* ignore */ }
+      this.clientPool.delete(connectionId);
+    }
 
     const client = new Client({ name: 'tela-gateway', version: '1.0.0' });
     const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
@@ -320,9 +326,29 @@ export class McpGateway {
                 });
                 return mcpResult as { content: Array<{ type: 'text'; text: string }> };
               } catch (err) {
+                // Evict stale client and retry once with a fresh connection
                 await gateway.disconnectClient(connectionId);
-                console.error(`[mcp-gateway] Tool call ${remoteTool.name} on ${connectionId} failed:`, err);
-                return gateway.textResult(`Tool call failed: ${err instanceof Error ? err.message : String(err)}`);
+                const errMsg = err instanceof Error ? err.message : String(err);
+                console.warn(`[mcp-gateway] Tool call ${remoteTool.name} on ${connectionId} failed (will retry): ${errMsg}`);
+
+                const retry = await getClient();
+                if ('error' in retry) {
+                  console.error(`[mcp-gateway] Retry connection failed for ${connectionId}: ${retry.error}`);
+                  return gateway.textResult(`Tool call failed after retry: ${retry.error}`);
+                }
+
+                try {
+                  const retryResult = await retry.client.callTool({
+                    name: remoteTool.name,
+                    arguments: args.params ?? {},
+                  });
+                  return retryResult as { content: Array<{ type: 'text'; text: string }> };
+                } catch (retryErr) {
+                  await gateway.disconnectClient(connectionId);
+                  const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+                  console.error(`[mcp-gateway] Tool call ${remoteTool.name} on ${connectionId} failed on retry:`, retryMsg);
+                  return gateway.textResult(`Tool call failed: ${retryMsg}`);
+                }
               }
             },
           );
