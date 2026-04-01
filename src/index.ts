@@ -248,6 +248,7 @@ async function main() {
     telegram?.stop();
     transcriptProcessor?.stop();
     await shiplens?.disconnect();
+    await mcpGateway?.disconnectAll();
     await gitSync.flush();
     apiServer.close();
     db.close();

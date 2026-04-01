@@ -1,8 +1,11 @@
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { z } from 'zod';
 import type { DatabaseService } from './database.js';
 import type { EncryptionService } from './encryption.js';
 import type { McpPolicyRow, ConnectionRow } from '../types/index.js';
+import { config } from '../config/env.js';
 
 // Data classification hierarchy (higher index = more restricted)
 const CLASSIFICATION_LEVELS = ['public', 'internal', 'confidential', 'restricted'] as const;
@@ -19,13 +22,67 @@ function isClassificationAllowed(toolClassification: string, maxAllowed: string)
   return toolLevel <= maxLevel;
 }
 
+interface McpClientEntry {
+  client: Client;
+  tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+  connectedAt: number;
+}
+
 export class McpGateway {
   private rateLimiter = new RateLimiter();
+  private clientPool = new Map<string, McpClientEntry>();
 
   constructor(
     private db: DatabaseService,
     private encryption: EncryptionService,
   ) {}
+
+  /**
+   * Connect to a remote MCP server and cache the client + discovered tools.
+   */
+  private async getOrCreateClient(connectionId: string, url: string, token: string): Promise<McpClientEntry> {
+    const existing = this.clientPool.get(connectionId);
+    if (existing) return existing;
+
+    const client = new Client({ name: 'tela-gateway', version: '1.0.0' });
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+    const transport = new SSEClientTransport(new URL(url), { requestInit: { headers } });
+
+    await client.connect(transport);
+
+    const toolsResult = await client.listTools();
+    const tools = toolsResult.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema as Record<string, unknown> | undefined,
+    }));
+
+    const entry: McpClientEntry = { client, tools, connectedAt: Date.now() };
+    this.clientPool.set(connectionId, entry);
+
+    console.log(`[mcp-gateway] Connected to ${connectionId}: ${tools.length} tools discovered`);
+    return entry;
+  }
+
+  /**
+   * Disconnect a cached client (e.g. on credential change or error).
+   */
+  async disconnectClient(connectionId: string): Promise<void> {
+    const entry = this.clientPool.get(connectionId);
+    if (entry) {
+      try { await entry.client.close(); } catch { /* ignore */ }
+      this.clientPool.delete(connectionId);
+    }
+  }
+
+  /**
+   * Disconnect all cached clients (for graceful shutdown).
+   */
+  async disconnectAll(): Promise<void> {
+    for (const [id] of this.clientPool) {
+      await this.disconnectClient(id);
+    }
+  }
 
   /**
    * Resolve the governed MCP server map for a (user, agent) pair.
@@ -59,8 +116,18 @@ export class McpGateway {
       const connection = this.db.getConnection(connectionId);
       if (!connection || connection.status !== 'connected') continue;
 
-      // Create governed proxy
-      servers[connectionId] = this.createGovernedProxy(userId, connectionId, connection, policy);
+      const proxy = this.createGovernedProxy(userId, connectionId, connection, policy);
+
+      // Realize the lazy proxy: connect to remote MCP and discover tools
+      if (proxy && typeof proxy === 'object' && 'realize' in proxy) {
+        try {
+          servers[connectionId] = await (proxy as any).realize();
+        } catch (err) {
+          console.error(`[mcp-gateway] Failed to realize proxy for ${connectionId}:`, err);
+        }
+      } else {
+        servers[connectionId] = proxy;
+      }
     }
 
     return servers;
@@ -119,80 +186,155 @@ export class McpGateway {
     const classifications = this.db.getToolClassifications(connectionId);
     const classificationMap = new Map(classifications.map(c => [c.tool_name, c]));
 
-    return createSdkMcpServer({
-      name: `governed-${connectionId}`,
-      version: '1.0.0',
-      tools: [
-        tool(
-          `${connectionId}_query`,
-          `Query ${connection.name} (governed). Access level: ${policy.access_level}. Use this to interact with the ${connection.name} integration.`,
-          {
-            action: z.string().describe('The action to perform'),
-            tool_name: z.string().optional().describe('Specific tool name within the connection'),
-            params: z.record(z.unknown()).optional().describe('Action parameters'),
-          },
-          async (args) => {
-            const toolName = args.tool_name ?? args.action;
+    // Governance check shared by all forwarded tools
+    const checkGovernance = (toolName: string): string | null => {
+      if (deniedTools?.includes(toolName)) {
+        this.auditToolCall(userId, connectionId, toolName, 'denied_by_policy');
+        return `Permission denied: tool "${toolName}" is blocked by policy.`;
+      }
+      if (allowedTools && !allowedTools.includes(toolName)) {
+        this.auditToolCall(userId, connectionId, toolName, 'denied_not_in_allowlist');
+        return `Permission denied: tool "${toolName}" is not in the allowed list for this connection.`;
+      }
+      if (policy.access_level === 'read' && this.isWriteOperation(toolName, toolName)) {
+        this.auditToolCall(userId, connectionId, toolName, 'denied_read_only');
+        return `Permission denied: read-only access to ${connection.name}. Write operations are not allowed.`;
+      }
+      const classification = classificationMap.get(toolName);
+      if (classification && !isClassificationAllowed(classification.data_classification, policy.max_data_classification)) {
+        this.auditToolCall(userId, connectionId, toolName, 'denied_classification');
+        return `Permission denied: "${toolName}" requires ${classification.data_classification} clearance, but your maximum is ${policy.max_data_classification}.`;
+      }
+      if (!this.rateLimiter.check(userId, connectionId, {
+        perHour: policy.rate_limit_per_hour,
+        perDay: policy.rate_limit_per_day,
+      })) {
+        this.auditToolCall(userId, connectionId, toolName, 'denied_rate_limit');
+        return 'Rate limit exceeded. Try again later.';
+      }
+      return null;
+    };
 
-            // 1. Tool-level filtering
-            if (deniedTools?.includes(toolName)) {
-              this.auditToolCall(userId, connectionId, toolName, 'denied_by_policy');
-              return this.textResult(`Permission denied: tool "${toolName}" is blocked by policy.`);
-            }
-            if (allowedTools && !allowedTools.includes(toolName)) {
-              this.auditToolCall(userId, connectionId, toolName, 'denied_not_in_allowlist');
-              return this.textResult(`Permission denied: tool "${toolName}" is not in the allowed list for this connection.`);
-            }
+    // Resolve credentials and connect lazily
+    const getClient = async (): Promise<{ client: Client; entry: McpClientEntry } | { error: string }> => {
+      let token: string | null = null;
 
-            // 2. Write operation check for read-only access
-            if (policy.access_level === 'read' && this.isWriteOperation(toolName, args.action)) {
-              this.auditToolCall(userId, connectionId, toolName, 'denied_read_only');
-              return this.textResult(`Permission denied: read-only access to ${connection.name}. Write operations are not allowed.`);
-            }
+      // Try DB credentials first
+      try {
+        const { token: rawCredentials } = this.resolveCredentials(userId, connection);
+        if (rawCredentials) {
+          token = rawCredentials;
+          // Extract bearer token from stored credentials (may be JSON like {"apiKey":"sk_..."})
+          try {
+            const parsed = JSON.parse(rawCredentials);
+            token = parsed.apiKey ?? parsed.token ?? parsed.access_token ?? rawCredentials;
+          } catch {
+            // Not JSON — use as-is
+          }
+        }
+      } catch (err) {
+        console.warn(`[mcp-gateway] DB credential decryption failed for ${connectionId}, trying env fallback:`, err instanceof Error ? err.message : err);
+      }
 
-            // 3. Data classification check
-            const classification = classificationMap.get(toolName);
-            if (classification && !isClassificationAllowed(classification.data_classification, policy.max_data_classification)) {
-              this.auditToolCall(userId, connectionId, toolName, 'denied_classification');
-              return this.textResult(
-                `Permission denied: "${toolName}" requires ${classification.data_classification} clearance, but your maximum is ${policy.max_data_classification}.`,
-              );
-            }
+      // Env fallback for known connection types
+      if (!token && connection.type === 'shiplens' && config.shiplensApiKey) {
+        token = config.shiplensApiKey;
+        console.log(`[mcp-gateway] Using env SHIPLENS_API_KEY fallback for ${connectionId}`);
+      }
 
-            // 4. Rate limit check
-            if (!this.rateLimiter.check(userId, connectionId, {
-              perHour: policy.rate_limit_per_hour,
-              perDay: policy.rate_limit_per_day,
-            })) {
-              this.auditToolCall(userId, connectionId, toolName, 'denied_rate_limit');
-              return this.textResult('Rate limit exceeded. Try again later.');
-            }
+      if (!token) {
+        return { error: `Cannot access ${connection.name}: no valid credentials found. Check encryption key or re-save credentials.` };
+      }
 
-            // 5. Credential resolution (user → team → company)
-            const { token: credentials, source: credSource } = this.resolveCredentials(userId, connection);
-            if (!credentials) {
-              const hint = credSource === 'user'
-                ? 'Please connect your account in My Connections.'
-                : credSource === 'team'
-                ? 'Your team has not connected this service, or you are not a member of the team.'
-                : 'This connection has no credentials configured. Ask an admin.';
-              this.auditToolCall(userId, connectionId, toolName, 'denied_no_credentials');
-              return this.textResult(`Cannot access ${connection.name}: ${hint}`);
-            }
+      // Resolve URL: DB field first, then env fallback for known types
+      const mcpUrl = connection.mcp_server_url
+        || (connection.type === 'shiplens' ? config.shiplensUrl : null);
+      if (!mcpUrl) {
+        return { error: `Connection ${connection.name} has no MCP server URL configured.` };
+      }
+      try {
+        const entry = await this.getOrCreateClient(connectionId, mcpUrl, token);
+        return { client: entry.client, entry };
+      } catch (err) {
+        // Evict broken client and report
+        await this.disconnectClient(connectionId);
+        console.error(`[mcp-gateway] Failed to connect to ${connectionId}:`, err);
+        return { error: `Failed to connect to ${connection.name}: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    };
 
-            // 6. Log the allowed call
-            this.auditToolCall(userId, connectionId, toolName, 'allowed', args.action);
+    // Connect eagerly to discover remote tools, then expose each one individually
+    const serverName = connection.name.toLowerCase().replace(/\s+/g, '-');
+    const gateway = this;
 
-            // 7. Forward to real MCP server (when registry is ready)
-            return this.textResult(
-              `[Governed MCP] Connection: ${connection.name}, Action: ${args.action}, Tool: ${toolName}, ` +
-              `Access: ${policy.access_level}, Token: ${credSource}. ` +
-              `Real MCP forwarding pending registry integration.`,
-            );
-          },
-        ),
-      ],
-    });
+    // We return a lazy proxy that discovers tools on first use, but we also
+    // expose a passthrough tool immediately so the SDK has something to register.
+    // The real magic: we connect and discover tools, then create one SDK tool per remote tool.
+    return {
+      _type: 'lazy-governed-proxy' as const,
+      connectionId,
+      connection,
+      policy,
+      userId,
+      // This gets resolved by our patched resolveServers
+      async realize(): Promise<ReturnType<typeof createSdkMcpServer>> {
+        const clientResult = await getClient();
+        if ('error' in clientResult) {
+          console.error(`[mcp-gateway] Cannot realize proxy for ${connectionId}: ${clientResult.error}`);
+          // Return a server with a single error tool
+          return createSdkMcpServer({
+            name: `governed-${serverName}`,
+            version: '1.0.0',
+            tools: [
+              tool(
+                `${serverName}_status`,
+                `${connection.name} connection status`,
+                {},
+                async () => gateway.textResult(clientResult.error),
+              ),
+            ],
+          });
+        }
+
+        const remoteTtools = clientResult.entry.tools;
+        console.log(`[mcp-gateway] Realized proxy for ${connection.name}: ${remoteTtools.length} tools`);
+
+        const sdkTools = remoteTtools.map((remoteTool) => {
+          return tool(
+            remoteTool.name,
+            remoteTool.description ?? `${connection.name} tool: ${remoteTool.name}`,
+            { params: z.record(z.unknown()).optional().describe('Tool parameters') },
+            async (args) => {
+              const denial = checkGovernance(remoteTool.name);
+              if (denial) return gateway.textResult(denial);
+
+              const result = await getClient();
+              if ('error' in result) return gateway.textResult(result.error);
+
+              gateway.auditToolCall(userId, connectionId, remoteTool.name, 'allowed', remoteTool.name);
+
+              try {
+                const mcpResult = await result.client.callTool({
+                  name: remoteTool.name,
+                  arguments: args.params ?? {},
+                });
+                return mcpResult as { content: Array<{ type: 'text'; text: string }> };
+              } catch (err) {
+                await gateway.disconnectClient(connectionId);
+                console.error(`[mcp-gateway] Tool call ${remoteTool.name} on ${connectionId} failed:`, err);
+                return gateway.textResult(`Tool call failed: ${err instanceof Error ? err.message : String(err)}`);
+              }
+            },
+          );
+        });
+
+        return createSdkMcpServer({
+          name: `governed-${serverName}`,
+          version: '1.0.0',
+          tools: sdkTools,
+        });
+      },
+    };
   }
 
   private isWriteOperation(toolName: string, action: string): boolean {
