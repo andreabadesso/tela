@@ -181,13 +181,7 @@ export function useTelaRuntime(agentId?: string, threadId?: string | null) {
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date() }]);
       setIsRunning(true);
 
-      // WebSocket
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ text: userText, agentId }));
-        return;
-      }
-
-      // REST fallback
+      // Always use REST — simpler and reliable
       try {
         const res = await api.sendMessage(userText, agentId);
         pendingAssistantId.current = null;
