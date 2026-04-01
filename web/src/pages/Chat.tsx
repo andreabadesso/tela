@@ -36,9 +36,10 @@ export function Chat({ initialThreadId }: { initialThreadId?: string }) {
   useEffect(() => {
     if (currentThreadId && currentThreadId !== activeThreadId) {
       setActiveThreadId(currentThreadId);
-      refetchThreads();
+      void refetchThreads();
     }
-  }, [currentThreadId, activeThreadId, refetchThreads]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentThreadId]);
 
   // Parse thread ID from hash
   useEffect(() => {

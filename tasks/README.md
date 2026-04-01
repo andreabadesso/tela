@@ -7,8 +7,9 @@ The AI operating system for companies. Built with `@anthropic-ai/claude-agent-sd
 | Phase | Name | Tasks | Status |
 |-------|------|-------|--------|
 | 5 | Platform | 036–046 | **done** |
-| 6 | Enterprise | 047–058 | **done** |
+| 6 | Enterprise | 047–058 | **in-progress** (055, 056 remain) |
 | 7 | Agent Runtime | 060–069 | **pending** |
+| 8 | Agent Orchestration & Isolation | 070–07x | **pending** |
 
 Earlier phases (1–4) built the core: vault tools, Telegram bot, Git sync, Google Calendar/Gmail, Jira, GitHub, ShipLens, vector search, pattern learning, and notification filtering. All complete and integrated.
 
@@ -54,8 +55,8 @@ Multi-user deployment. Auth, RBAC, MCP governance, per-user permissions, budget 
 | [052](052.md) | Governance policies database schema | 047 | small | done |
 | [053](053.md) | User-delegated connections | 050 | medium | done |
 | [054](054.md) | Per-user audit trail | 048, 050 | small | done |
-| [055](055.md) | Per-user budget & rate limiting | 050, 054 | medium | done |
-| [056](056.md) | Enterprise hardening | 048, 050, 054, 055 | large | done |
+| [055](055.md) | Per-user budget & rate limiting | 050, 054 | medium | **in-progress** (~60%) |
+| [056](056.md) | Enterprise hardening | 048, 050, 054, 055 | large | **in-progress** (~40%) |
 | [057](057.md) | MCP server registry (dynamic discovery) | 050 | medium | done |
 | [058](058.md) | Onboarding flow & company setup wizard | 048, 049, 050, 051 | medium | done |
 
@@ -110,3 +111,15 @@ Production-grade agent execution: streaming tool execution, context compaction, 
 8. **066** Structured batch — better UX for batch operations
 9. **063** Tool execution pipeline — depends on MCP gateway
 10. **067** Prompt injection defense — depends on 063
+
+---
+
+## Phase 8 — Agent Orchestration & Isolation (070–07x)
+
+Pluggable agent runtimes, containerized execution, and production-grade isolation.
+
+### Task List
+
+| ID | Title | Deps | Effort | Status |
+|----|-------|------|--------|--------|
+| [070](070.md) | Agent runtime abstraction (pluggable execution backends) | 042, 046 | large | pending |
