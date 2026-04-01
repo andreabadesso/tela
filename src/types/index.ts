@@ -294,3 +294,29 @@ export interface McpToolClassificationRow {
   data_classification: string;
   description: string | null;
 }
+
+// ─── Agent Memory ────────────────────────────────────────────
+
+export interface AgentMemoryRow {
+  id: string;
+  agent_id: string;
+  user_id: string | null;
+  scope: 'global' | 'user';
+  type: 'user' | 'feedback' | 'project' | 'reference' | 'preference';
+  name: string;
+  description: string;
+  content: string;
+  source: 'auto' | 'manual' | 'tool';
+  stale_after_days: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentBehaviorConfigRow {
+  id: string;
+  agent_id: string;
+  user_id: string | null;
+  config: string; // JSON
+  created_at: string;
+  updated_at: string;
+}

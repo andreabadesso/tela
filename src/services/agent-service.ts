@@ -7,6 +7,7 @@ import type { McpGateway } from './mcp-gateway.js';
 import type { KnowledgeManager } from '../knowledge/manager.js';
 import type { AgentInput, AgentOutput } from '../types/index.js';
 import { config } from '../config/env.js';
+import { buildMemoryContext, extractMemories, buildMemoryMcpServer } from './memory-service.js';
 
 type VaultTools = ReturnType<typeof createVaultTools>;
 
@@ -199,10 +200,14 @@ export class AgentService {
 
     const interpolatedPrompt = this.interpolatePrompt(agentConfig.system_prompt, agentConfig.name);
 
+    // Build memory context
+    const memoryContext = buildMemoryContext(this.db, agentId, input.userId);
+
     const systemPrompt = [
       interpolatedPrompt,
       `Today is ${today}.`,
       'Respond in Portuguese (BR) unless the message is in English.',
+      memoryContext,
       '',
       recentHistory ? `Recent conversation history:\n${recentHistory}` : '',
     ].filter(Boolean).join('\n');
@@ -226,12 +231,18 @@ export class AgentService {
 
     const hasKnowledgeServers = Object.keys(knowledgeServers).length > 0;
 
+    // Build memory MCP server (scoped to this request's agentId + userId)
+    const memoryMcpServer = config.agentMemoryEnabled
+      ? buildMemoryMcpServer(this.db, agentId, input.userId)
+      : null;
+
     let mcpServers: Record<string, any>;
     if (input.userId && this.mcpGateway) {
       const governedServers = await this.mcpGateway.resolveServers(input.userId, agentId);
       mcpServers = {
         ...(!hasKnowledgeServers ? { 'vault-tools': this.mcpServer } : {}),
         ...knowledgeServers,
+        ...(memoryMcpServer ? { 'memory-tools': memoryMcpServer } : {}),
         ...governedServers,
       };
     } else {
@@ -239,6 +250,7 @@ export class AgentService {
       mcpServers = {
         ...(!hasKnowledgeServers ? { 'vault-tools': this.mcpServer } : {}),
         ...knowledgeServers,
+        ...(memoryMcpServer ? { 'memory-tools': memoryMcpServer } : {}),
         ...this.getExternalMcpServers(),
       };
     }
@@ -287,6 +299,13 @@ export class AgentService {
 
     // Flush any vault writes
     await this.gitSync.flush();
+
+    // Fire-and-forget memory extraction (only for interactive sources)
+    const interactiveSources = ['web', 'telegram', 'agent'];
+    if (config.agentMemoryEnabled && interactiveSources.includes(input.source)) {
+      extractMemories(this.db, agentId, input.userId, input.text, resultText)
+        .catch(err => console.error('[agent-service] Memory extraction error:', err));
+    }
 
     const durationMs = Date.now() - startTime;
 
