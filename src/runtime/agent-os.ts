@@ -6,6 +6,7 @@ import type {
   AgentExecutionHandle,
   AgentRunStatus,
   AgentStreamEvent,
+  ToolSandbox,
 } from '../types/runtime.js';
 import type { AgentOutput } from '../types/index.js';
 
@@ -72,6 +73,25 @@ export class AgentOsRuntime implements AgentRuntime {
     return { runId, stream, result: resultPromise };
   }
 
+  private buildSandbox(): ToolSandbox {
+    return {
+      runCommand: async (command: string) => {
+        const vm = await this.getVm();
+        // vm.exec() is the Agent OS sandboxed VM API — NOT child_process
+        const vmRun = vm.exec.bind(vm);
+        return vmRun(command);
+      },
+      readFile: async (path: string) => {
+        const vm = await this.getVm();
+        return vm.readFile(path);
+      },
+      writeFile: async (path: string, content: Uint8Array) => {
+        const vm = await this.getVm();
+        return vm.writeFile(path, content);
+      },
+    };
+  }
+
   private async executeWithTimeout(
     runId: string,
     params: AgentExecutionParams,
@@ -81,9 +101,10 @@ export class AgentOsRuntime implements AgentRuntime {
     const startTime = Date.now();
     try {
       // LLM call on the host — AgentService handles OAuth/API key, MCP servers, etc.
-      // The VM sandbox is available for tool execution isolation
+      // Tool execution is sandboxed inside Agent OS V8 isolates
+      const sandbox = this.buildSandbox();
       const result = await Promise.race([
-        this.agentService.process(params.agentId, params.input),
+        this.agentService.process(params.agentId, params.input, sandbox),
         new Promise<never>((_, reject) => {
           signal.addEventListener('abort', () => reject(new Error('TIMEOUT')), { once: true });
           if (signal.aborted) reject(new Error('TIMEOUT'));

@@ -20,6 +20,7 @@ export interface AgentExecutionParams {
   timeout?: number;         // wall-clock ms, default 5 min
   resources?: ResourceLimits;
   userId?: string;          // for governance context
+  sandbox?: ToolSandbox;    // sandboxed tool execution (Agent OS / Docker)
 }
 
 export interface McpServerRef {
@@ -75,6 +76,22 @@ export interface AgentRunRow {
   error: string | null;
   resource_usage: string | null; // JSON: { peakMemoryMb, cpuSeconds }
   created_at: string;
+}
+
+// ─── Tool Sandbox ────────────────────────────────────────────
+
+/**
+ * Interface for sandboxed tool execution.
+ * When provided, tool handlers delegate file/command operations to the sandbox
+ * instead of running them directly on the host.
+ */
+export interface ToolSandbox {
+  /** Run a command inside the sandbox VM (Agent OS / Docker — NOT child_process). */
+  runCommand(command: string): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  /** Read a file from the sandbox filesystem. */
+  readFile(path: string): Promise<Uint8Array>;
+  /** Write a file to the sandbox filesystem. */
+  writeFile(path: string, content: Uint8Array): Promise<void>;
 }
 
 // ─── Runtime Config ──────────────────────────────────────────

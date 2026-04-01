@@ -8,6 +8,7 @@ import type { KnowledgeManager } from '../knowledge/manager.js';
 import type { AgentInput, AgentOutput } from '../types/index.js';
 import { config } from '../config/env.js';
 import { buildMemoryContext, extractMemories, buildMemoryMcpServer } from './memory-service.js';
+import type { ToolSandbox } from '../types/runtime.js';
 
 type VaultTools = ReturnType<typeof createVaultTools>;
 
@@ -28,51 +29,110 @@ export class AgentService {
     this.knowledgeManager = knowledgeManager ?? null;
   }
 
-  private buildMcpServer() {
+  private buildMcpServer(sandbox?: ToolSandbox) {
     const v = this.vault;
+
+    // When a sandbox is provided, file read/write operations run inside
+    // the sandbox VM (Agent OS V8 isolate or Docker container) instead
+    // of directly on the host filesystem.
+    const readNote = sandbox
+      ? async (path: string) => {
+          const bytes = await sandbox.readFile(path);
+          return new TextDecoder().decode(bytes);
+        }
+      : (path: string) => v.read_note(path);
+
+    const writeNote = sandbox
+      ? async (path: string, content: string) => {
+          await sandbox.writeFile(path, new TextEncoder().encode(content));
+          return `Written: ${path}`;
+        }
+      : (path: string, content: string) => v.write_note(path, content);
+
+    const searchVault = sandbox
+      ? async (query: string, opts?: { path?: string; maxResults?: number }) => {
+          // Search via sandbox grep command
+          const maxResults = opts?.maxResults ?? 20;
+          const searchPath = opts?.path ?? '.';
+          const result = await sandbox.runCommand(
+            `grep -rl --include='*.md' ${JSON.stringify(query)} ${JSON.stringify(searchPath)} | head -${maxResults}`
+          );
+          return result.stdout.split('\n').filter(Boolean).map(f => ({ file: f, content: '', line: 0, context: [] }));
+        }
+      : (query: string, opts?: { path?: string; maxResults?: number }) => v.search_vault(query, opts);
+
+    const listNotes = sandbox
+      ? async (dir?: string, opts?: { recursive?: boolean }) => {
+          const searchDir = dir ?? '.';
+          const cmd = opts?.recursive
+            ? `find ${JSON.stringify(searchDir)} -name '*.md' -type f`
+            : `ls ${JSON.stringify(searchDir)}/*.md 2>/dev/null`;
+          const result = await sandbox.runCommand(cmd);
+          return result.stdout.split('\n').filter(Boolean);
+        }
+      : (dir?: string, opts?: { recursive?: boolean }) => v.list_notes(dir, opts);
 
     const tools = [
       tool('read_note', 'Read a note from the vault by relative path.', {
         path: z.string().describe('Relative path to the note'),
       }, async (args) => ({
-        content: [{ type: 'text' as const, text: await v.read_note(args.path) }],
+        content: [{ type: 'text' as const, text: await readNote(args.path) }],
       })),
 
       tool('write_note', 'Create or overwrite a note. Creates parent directories.', {
         path: z.string().describe('Relative path to the note'),
         content: z.string().describe('Content to write'),
       }, async (args) => ({
-        content: [{ type: 'text' as const, text: await v.write_note(args.path, args.content) }],
+        content: [{ type: 'text' as const, text: await writeNote(args.path, args.content) }],
       })),
 
       tool('edit_note', 'Find and replace a string within a note.', {
         path: z.string().describe('Relative path to the note'),
         oldString: z.string().describe('String to find'),
         newString: z.string().describe('Replacement string'),
-      }, async (args) => ({
-        content: [{ type: 'text' as const, text: await v.edit_note(args.path, args.oldString, args.newString) }],
-      })),
+      }, async (args) => {
+        if (sandbox) {
+          const bytes = await sandbox.readFile(args.path);
+          const content = new TextDecoder().decode(bytes);
+          const updated = content.replace(args.oldString, args.newString);
+          await sandbox.writeFile(args.path, new TextEncoder().encode(updated));
+          return { content: [{ type: 'text' as const, text: `Edited: ${args.path}` }] };
+        }
+        return { content: [{ type: 'text' as const, text: await v.edit_note(args.path, args.oldString, args.newString) }] };
+      }),
 
       tool('append_to_note', 'Append text to the end of a note.', {
         path: z.string().describe('Relative path to the note'),
         content: z.string().describe('Text to append'),
-      }, async (args) => ({
-        content: [{ type: 'text' as const, text: await v.append_to_note(args.path, args.content) }],
-      })),
+      }, async (args) => {
+        if (sandbox) {
+          const bytes = await sandbox.readFile(args.path);
+          const existing = new TextDecoder().decode(bytes);
+          await sandbox.writeFile(args.path, new TextEncoder().encode(existing + '\n' + args.content));
+          return { content: [{ type: 'text' as const, text: `Appended to: ${args.path}` }] };
+        }
+        return { content: [{ type: 'text' as const, text: await v.append_to_note(args.path, args.content) }] };
+      }),
 
       tool('prepend_to_note', 'Insert text at the top of a note (after frontmatter).', {
         path: z.string().describe('Relative path to the note'),
         content: z.string().describe('Text to prepend'),
-      }, async (args) => ({
-        content: [{ type: 'text' as const, text: await v.prepend_to_note(args.path, args.content) }],
-      })),
+      }, async (args) => {
+        if (sandbox) {
+          const bytes = await sandbox.readFile(args.path);
+          const existing = new TextDecoder().decode(bytes);
+          await sandbox.writeFile(args.path, new TextEncoder().encode(args.content + '\n' + existing));
+          return { content: [{ type: 'text' as const, text: `Prepended to: ${args.path}` }] };
+        }
+        return { content: [{ type: 'text' as const, text: await v.prepend_to_note(args.path, args.content) }] };
+      }),
 
       tool('search_vault', 'Full-text search across the vault.', {
         query: z.string().describe('Search query'),
         path: z.string().optional().describe('Subdirectory to search within'),
         maxResults: z.number().optional().describe('Max results (default 20)'),
       }, async (args) => {
-        const results = await v.search_vault(args.query, {
+        const results = await searchVault(args.query, {
           path: args.path,
           maxResults: args.maxResults,
         });
@@ -83,7 +143,7 @@ export class AgentService {
         dir: z.string().optional().describe('Subdirectory (default: vault root)'),
         recursive: z.boolean().optional().describe('Recurse into subdirectories'),
       }, async (args) => {
-        const files = await v.list_notes(args.dir, { recursive: args.recursive });
+        const files = await listNotes(args.dir, { recursive: args.recursive });
         return { content: [{ type: 'text' as const, text: files.join('\n') }] };
       }),
 
@@ -91,6 +151,7 @@ export class AgentService {
         path: z.string().optional().describe('Subdirectory to search'),
         includeCompleted: z.boolean().optional().describe('Include completed tasks'),
       }, async (args) => {
+        // Tasks always run on host (need vault parsing logic)
         const tasks = await v.get_tasks({
           path: args.path,
           includeCompleted: args.includeCompleted,
@@ -101,6 +162,7 @@ export class AgentService {
       tool('get_daily_note', 'Read today\'s daily note. Creates from template if missing.', {
         date: z.string().optional().describe('Date in YYYY-MM-DD format'),
       }, async (args) => ({
+        // Daily note always runs on host (needs template logic)
         content: [{ type: 'text' as const, text: await v.get_daily_note(args.date) }],
       })),
     ];
@@ -172,7 +234,7 @@ export class AgentService {
       .replace(/\{\{agent_name\}\}/g, agentName);
   }
 
-  async process(agentId: string, input: AgentInput): Promise<AgentOutput> {
+  async process(agentId: string, input: AgentInput, sandbox?: ToolSandbox): Promise<AgentOutput> {
     const startTime = Date.now();
     const agentConfig = this.db.getAgent(agentId);
     if (!agentConfig) throw new Error(`Agent not found: ${agentId}`);
@@ -231,6 +293,14 @@ export class AgentService {
 
     const hasKnowledgeServers = Object.keys(knowledgeServers).length > 0;
 
+    // Use sandbox-aware vault tools when a sandbox is provided
+    const vaultMcpServer = sandbox
+      ? this.buildMcpServer(sandbox)
+      : this.mcpServer;
+    if (sandbox) {
+      console.log(`[agent-service] Using sandboxed tool execution for agent "${agentConfig.name}"`);
+    }
+
     // Build memory MCP server (scoped to this request's agentId + userId)
     const memoryMcpServer = config.agentMemoryEnabled
       ? buildMemoryMcpServer(this.db, agentId, input.userId)
@@ -240,15 +310,14 @@ export class AgentService {
     if (input.userId && this.mcpGateway) {
       const governedServers = await this.mcpGateway.resolveServers(input.userId, agentId);
       mcpServers = {
-        ...(!hasKnowledgeServers ? { 'vault-tools': this.mcpServer } : {}),
+        ...(!hasKnowledgeServers ? { 'vault-tools': vaultMcpServer } : {}),
         ...knowledgeServers,
         ...(memoryMcpServer ? { 'memory-tools': memoryMcpServer } : {}),
         ...governedServers,
       };
     } else {
-      // Backward compat for Telegram / non-authenticated sources
       mcpServers = {
-        ...(!hasKnowledgeServers ? { 'vault-tools': this.mcpServer } : {}),
+        ...(!hasKnowledgeServers ? { 'vault-tools': vaultMcpServer } : {}),
         ...knowledgeServers,
         ...(memoryMcpServer ? { 'memory-tools': memoryMcpServer } : {}),
         ...this.getExternalMcpServers(),
