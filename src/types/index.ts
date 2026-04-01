@@ -1,6 +1,6 @@
 export interface AgentInput {
   text: string;
-  source: 'telegram' | 'cron' | 'event' | 'web' | 'agent';
+  source: string;
   userId?: string;
   metadata?: Record<string, unknown>;
 }
@@ -156,6 +156,30 @@ export interface NotificationChannelRow {
   enabled: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface CommunicationChannelRow {
+  id: string;
+  name: string;
+  platform: string;
+  direction: string;
+  agent_id: string | null;
+  config: string;
+  enabled: number;
+  status: string;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChannelThreadRow {
+  id: string;
+  channel_id: string;
+  platform_thread_id: string;
+  agent_id: string;
+  chat_thread_id: string | null;
+  created_at: string;
+  last_message_at: string;
 }
 
 export interface TaskCheckoutRow {

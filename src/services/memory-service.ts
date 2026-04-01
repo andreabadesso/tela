@@ -55,7 +55,16 @@ export function buildMemoryContext(db: DatabaseService, agentId: string, userId?
     }
   }
 
-  if (sections.length === 0) return '';
+  // Always include memory instructions when memory is enabled
+  sections.push(`## Memory Instructions
+You have memory tools available: \`remember\`, \`recall\`, \`forget\`, \`list_memories\`.
+After responding to the user, silently save any new persistent facts worth remembering using the \`remember\` tool. Save things like:
+- User facts: role, expertise, preferences, name
+- Feedback: corrections about your behavior, confirmed approaches
+- Project: goals, deadlines, decisions, incidents
+- References: external systems, URLs, tools mentioned
+Do NOT save: code patterns, ephemeral task details, things already in your memories above, or trivial greetings.
+Only save genuinely new information. Do not mention to the user that you are saving memories.`);
 
   let context = `\n=== MEMORY CONTEXT ===\n${sections.join('\n')}\n=== END MEMORY CONTEXT ===\n`;
 
@@ -76,130 +85,6 @@ function getStaleWarning(m: AgentMemoryRow): string {
     return ` ⚠️ STALE (${Math.floor(daysSinceUpdate)} days old)`;
   }
   return '';
-}
-
-/**
- * Auto-extract memories from a conversation turn. Fire-and-forget.
- */
-export async function extractMemories(
-  db: DatabaseService,
-  agentId: string,
-  userId: string | undefined,
-  input: string,
-  output: string,
-): Promise<void> {
-  if (!config.agentMemoryEnabled) return;
-
-  // Get existing memory manifest for dedup
-  const existingMemories = db.getMemories(agentId, { limit: 100 });
-  const manifest = existingMemories.map(m => `- [${m.type}] ${m.name}: ${m.description}`).join('\n');
-
-  const extractionPrompt = `You are a memory extraction system. Analyze this conversation turn and extract any new persistent memories worth saving.
-
-## Memory Types
-- user: Facts about the user (role, expertise, preferences)
-- feedback: User corrections or confirmations about agent behavior
-- project: Goals, deadlines, incidents, decisions
-- reference: Pointers to external systems, URLs, tools
-- preference: How the user wants the agent to behave
-
-## What NOT to extract
-- Code patterns, conventions, architecture details
-- Git history, who-changed-what
-- Debugging solutions (the fix is in the code)
-- Ephemeral task details, temporary state
-- Things already in the agent's system prompt
-- Anything already captured in existing memories
-
-## Existing Memories
-${manifest || '(none)'}
-
-## Conversation Turn
-User: ${input.slice(0, 2000)}
-Assistant: ${output.slice(0, 2000)}
-
-## Response Format
-Return a JSON array of memories to save. Return [] if nothing worth saving.
-Each memory: { "type": "...", "name": "short title", "description": "one-line summary", "content": "full detail", "scope": "global" | "user" }
-
-IMPORTANT: Return ONLY the JSON array, no markdown fences, no explanation.`;
-
-  try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) return;
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: extractionPrompt }],
-      }),
-    });
-
-    if (!response.ok) {
-      console.error('[memory-extraction] API error:', response.status);
-      return;
-    }
-
-    const data = await response.json() as { content: Array<{ type: string; text?: string }> };
-    const text = data.content?.[0]?.text?.trim();
-    if (!text) return;
-
-    let memories: Array<{
-      type: string;
-      name: string;
-      description: string;
-      content: string;
-      scope: 'global' | 'user';
-    }>;
-
-    try {
-      memories = JSON.parse(text);
-    } catch {
-      console.error('[memory-extraction] Failed to parse response:', text.slice(0, 200));
-      return;
-    }
-
-    if (!Array.isArray(memories) || memories.length === 0) return;
-
-    for (const mem of memories) {
-      if (!mem.type || !mem.name || !mem.description || !mem.content) continue;
-
-      // Dedup: check for similar existing memory by name
-      const existing = existingMemories.find(
-        e => e.name.toLowerCase() === mem.name.toLowerCase() && e.type === mem.type
-      );
-
-      if (existing) {
-        // Update existing memory with merged content
-        db.updateMemory(existing.id, {
-          description: mem.description,
-          content: `${existing.content}\n\n---\n${mem.content}`,
-        });
-        console.log(`[memory-extraction] Updated memory: ${mem.name}`);
-      } else {
-        db.createMemory({
-          agent_id: agentId,
-          user_id: mem.scope === 'user' ? userId ?? null : null,
-          scope: mem.scope ?? 'global',
-          type: mem.type,
-          name: mem.name,
-          description: mem.description,
-          content: mem.content,
-          source: 'auto',
-        });
-        console.log(`[memory-extraction] Created memory: ${mem.name}`);
-      }
-    }
-  } catch (err) {
-    console.error('[memory-extraction] Error:', err);
-  }
 }
 
 /**

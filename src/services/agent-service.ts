@@ -7,7 +7,7 @@ import type { McpGateway } from './mcp-gateway.js';
 import type { KnowledgeManager } from '../knowledge/manager.js';
 import type { AgentInput, AgentOutput } from '../types/index.js';
 import { config } from '../config/env.js';
-import { buildMemoryContext, extractMemories, buildMemoryMcpServer } from './memory-service.js';
+import { buildMemoryContext, buildMemoryMcpServer } from './memory-service.js';
 import type { ToolSandbox } from '../types/runtime.js';
 
 type VaultTools = ReturnType<typeof createVaultTools>;
@@ -306,6 +306,11 @@ export class AgentService {
       ? buildMemoryMcpServer(this.db, agentId, input.userId)
       : null;
 
+    // Resolve which MCP connections this agent is allowed to use
+    const agentMcpServerIds: string[] = (() => {
+      try { return JSON.parse(agentConfig.mcp_servers || '[]'); } catch { return []; }
+    })();
+
     let mcpServers: Record<string, any>;
     if (input.userId && this.mcpGateway) {
       const governedServers = await this.mcpGateway.resolveServers(input.userId, agentId);
@@ -316,11 +321,30 @@ export class AgentService {
         ...governedServers,
       };
     } else {
+      // No userId — filter external MCP servers by agent's configured mcp_servers list.
+      // This prevents agents from accessing tools they weren't assigned to.
+      const allExternal = this.getExternalMcpServers();
+      const filteredExternal: Record<string, any> = {};
+      if (agentMcpServerIds.length > 0) {
+        // Build a lookup: connection ID → connection type (e.g., 'shiplens')
+        const connectionTypes = new Map<string, string>();
+        for (const connId of agentMcpServerIds) {
+          const conn = this.db.getConnection(connId);
+          if (conn) connectionTypes.set(conn.type, connId);
+        }
+        // Only include external servers whose key matches an allowed connection type
+        for (const [key, value] of Object.entries(allExternal)) {
+          if (connectionTypes.has(key) || agentMcpServerIds.includes(key)) {
+            filteredExternal[key] = value;
+          }
+        }
+      }
+      // If agent has NO mcp_servers configured, give NO external tools (secure default)
       mcpServers = {
         ...(!hasKnowledgeServers ? { 'vault-tools': vaultMcpServer } : {}),
         ...knowledgeServers,
         ...(memoryMcpServer ? { 'memory-tools': memoryMcpServer } : {}),
-        ...this.getExternalMcpServers(),
+        ...filteredExternal,
       };
     }
 
@@ -369,23 +393,18 @@ export class AgentService {
     // Flush any vault writes
     await this.gitSync.flush();
 
-    // Fire-and-forget memory extraction (only for interactive sources)
-    const interactiveSources = ['web', 'telegram', 'agent'];
-    if (config.agentMemoryEnabled && interactiveSources.includes(input.source)) {
-      extractMemories(this.db, agentId, input.userId, input.text, resultText)
-        .catch(err => console.error('[agent-service] Memory extraction error:', err));
-    }
-
     const durationMs = Date.now() - startTime;
 
-    // Log conversation (scoped to agent)
-    this.db.logConversation({
-      source: input.source,
-      input: input.text,
-      output: resultText,
-      agentId,
-      durationMs,
-    });
+    // Only log successful conversations — never pollute history with error messages
+    if (resultText && resultText !== 'Error processing request. Please try again.' && resultText !== 'Agent execution timed out.') {
+      this.db.logConversation({
+        source: input.source,
+        input: input.text,
+        output: resultText,
+        agentId,
+        durationMs,
+      });
+    }
 
     return { text: resultText };
   }

@@ -12,6 +12,8 @@ import type {
   AuditLogRow,
   SettingRow,
   NotificationChannelRow,
+  CommunicationChannelRow,
+  ChannelThreadRow,
   TaskCheckoutRow,
   CostEventRow,
   BudgetPolicyRow,
@@ -1346,6 +1348,79 @@ export class DatabaseService {
         ? 'SELECT * FROM agent_behavior_config WHERE agent_id = ? AND user_id = ?'
         : 'SELECT * FROM agent_behavior_config WHERE agent_id = ? AND user_id IS NULL'
     ).get(...(userId ? [agentId, userId] : [agentId])) as AgentBehaviorConfigRow;
+  }
+
+  // ─── Communication Channels ────────────────────────────────────
+
+  getCommunicationChannels(): CommunicationChannelRow[] {
+    return this.db.prepare('SELECT * FROM communication_channels ORDER BY created_at').all() as CommunicationChannelRow[];
+  }
+
+  getCommunicationChannel(id: string): CommunicationChannelRow | undefined {
+    return this.db.prepare('SELECT * FROM communication_channels WHERE id = ?').get(id) as CommunicationChannelRow | undefined;
+  }
+
+  getCommunicationChannelsByPlatform(platform: string): CommunicationChannelRow[] {
+    return this.db.prepare('SELECT * FROM communication_channels WHERE platform = ? ORDER BY created_at').all(platform) as CommunicationChannelRow[];
+  }
+
+  createCommunicationChannel(data: Omit<CommunicationChannelRow, 'created_at' | 'updated_at' | 'status' | 'error_message'> & { id?: string }): CommunicationChannelRow {
+    const id = data.id || crypto.randomUUID();
+    this.db.prepare(`
+      INSERT INTO communication_channels (id, name, platform, direction, agent_id, config, enabled)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, data.name, data.platform, data.direction ?? 'bidirectional', data.agent_id ?? null, data.config ?? '{}', data.enabled ?? 1);
+    return this.getCommunicationChannel(id)!;
+  }
+
+  updateCommunicationChannel(id: string, data: Partial<Omit<CommunicationChannelRow, 'id' | 'created_at'>>): CommunicationChannelRow | undefined {
+    const existing = this.getCommunicationChannel(id);
+    if (!existing) return undefined;
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, val] of Object.entries(data)) {
+      if (key === 'id' || key === 'created_at') continue;
+      fields.push(`${key} = ?`);
+      values.push(val);
+    }
+    fields.push("updated_at = datetime('now')");
+    values.push(id);
+    this.db.prepare(`UPDATE communication_channels SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    return this.getCommunicationChannel(id);
+  }
+
+  deleteCommunicationChannel(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM communication_channels WHERE id = ?').run(id);
+    return result.changes > 0;
+  }
+
+  // ─── Channel Threads ──────────────────────────────────────────
+
+  getChannelThread(channelId: string, platformThreadId: string): ChannelThreadRow | undefined {
+    return this.db.prepare(
+      'SELECT * FROM channel_threads WHERE channel_id = ? AND platform_thread_id = ?'
+    ).get(channelId, platformThreadId) as ChannelThreadRow | undefined;
+  }
+
+  getChannelThreadsByChannel(channelId: string, limit = 50): ChannelThreadRow[] {
+    return this.db.prepare(
+      'SELECT * FROM channel_threads WHERE channel_id = ? ORDER BY last_message_at DESC LIMIT ?'
+    ).all(channelId, limit) as ChannelThreadRow[];
+  }
+
+  createChannelThread(data: Omit<ChannelThreadRow, 'id' | 'created_at' | 'last_message_at'> & { id?: string }): ChannelThreadRow {
+    const id = data.id || crypto.randomUUID();
+    this.db.prepare(`
+      INSERT INTO channel_threads (id, channel_id, platform_thread_id, agent_id, chat_thread_id)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(id, data.channel_id, data.platform_thread_id, data.agent_id, data.chat_thread_id ?? null);
+    return this.db.prepare('SELECT * FROM channel_threads WHERE id = ?').get(id) as ChannelThreadRow;
+  }
+
+  updateChannelThreadActivity(channelId: string, platformThreadId: string): void {
+    this.db.prepare(
+      "UPDATE channel_threads SET last_message_at = datetime('now') WHERE channel_id = ? AND platform_thread_id = ?"
+    ).run(channelId, platformThreadId);
   }
 
   // ─── Utilities ─────────────────────────────────────────────────

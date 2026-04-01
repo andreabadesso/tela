@@ -242,6 +242,24 @@ export const api = {
     fetchApi<AgentPolicy>(`/admin/policies/agents/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteAgentPolicy: (id: string) =>
     fetchApi<{ ok: boolean }>(`/admin/policies/agents/${id}`, { method: 'DELETE' }),
+
+  // Communication Channels
+  getChannels: () => fetchApi<CommunicationChannel[]>('/channels'),
+  getChannelsSummary: () => fetchApi<ChannelsSummary>('/channels/summary'),
+  createChannel: (data: Partial<CommunicationChannel>) =>
+    fetchApi<CommunicationChannel>('/channels', { method: 'POST', body: JSON.stringify(data) }),
+  updateChannel: (id: string, data: Partial<CommunicationChannel>) =>
+    fetchApi<CommunicationChannel>(`/channels/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteChannel: (id: string) =>
+    fetchApi<{ ok: boolean }>(`/channels/${id}`, { method: 'DELETE' }),
+  startChannel: (id: string) =>
+    fetchApi<{ ok: boolean; status: string }>(`/channels/${id}/start`, { method: 'POST' }),
+  stopChannel: (id: string) =>
+    fetchApi<{ ok: boolean; status: string }>(`/channels/${id}/stop`, { method: 'POST' }),
+  testChannel: (id: string) =>
+    fetchApi<{ success: boolean }>(`/channels/${id}/test`, { method: 'POST' }),
+  getChannelThreads: (id: string) =>
+    fetchApi<ChannelThread[]>(`/channels/${id}/threads`),
 };
 
 export interface AuditEntry {
@@ -490,4 +508,38 @@ export interface KnowledgeFile {
   size: number;
   lastModified: string;
   tags: string[];
+}
+
+export interface CommunicationChannel {
+  id: string;
+  name: string;
+  platform: string;
+  direction: string;
+  agent_id: string | null;
+  config: Record<string, string>;
+  enabled: number;
+  status: string;
+  error_message: string | null;
+  is_running: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChannelsSummary {
+  total: number;
+  enabled: number;
+  running: number;
+  by_platform: Record<string, number>;
+  by_direction: Record<string, number>;
+  errors: Array<{ id: string; name: string; platform: string; error: string }>;
+}
+
+export interface ChannelThread {
+  id: string;
+  channel_id: string;
+  platform_thread_id: string;
+  agent_id: string;
+  chat_thread_id: string | null;
+  created_at: string;
+  last_message_at: string;
 }

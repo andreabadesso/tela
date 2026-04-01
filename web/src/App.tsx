@@ -4,6 +4,7 @@ import { Layout } from '@/components/layout/Layout';
 import { Chat } from '@/pages/Chat';
 import { Agents } from '@/pages/Agents';
 import { AgentEdit } from '@/pages/AgentEdit';
+import { Channels } from '@/pages/Channels';
 import { Connections } from '@/pages/Connections';
 import { MyConnections } from '@/pages/MyConnections';
 import { Knowledge } from '@/pages/Knowledge';
@@ -117,6 +118,9 @@ function App() {
   if (!page) switch (hash) {
     case '#/agents':
       page = <Agents />;
+      break;
+    case '#/channels':
+      page = <Channels />;
       break;
     case '#/connections':
       page = <Connections />;

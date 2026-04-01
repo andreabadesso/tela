@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import type { TelegramService } from '../services/telegram.js';
+import type { ChannelGateway } from '../channels/gateway.js';
 import type { DatabaseService } from '../services/database.js';
 import type { JobDefinition } from '../types/index.js';
 
@@ -10,11 +11,17 @@ interface ManagedJob {
 
 export class JobRegistry {
   private jobs = new Map<string, ManagedJob>();
+  private channelGateway: ChannelGateway | null = null;
 
   constructor(
     private telegram: TelegramService,
     private db: DatabaseService,
   ) {}
+
+  /** Set the channel gateway for multi-channel job notifications. */
+  setChannelGateway(gateway: ChannelGateway): void {
+    this.channelGateway = gateway;
+  }
 
   register(job: JobDefinition): void {
     if (this.jobs.has(job.name)) {
@@ -72,8 +79,8 @@ export class JobRegistry {
       const output = await managed.definition.handler();
       this.db.finishJobRun(runId, 'success', output);
 
-      if (output && managed.definition.channel === 'telegram') {
-        await this.telegram.send(output, { parseMode: 'HTML' });
+      if (output) {
+        await this.sendJobOutput(name, output);
       }
 
       console.log(`[jobs] ${name} completed.`);
@@ -86,12 +93,8 @@ export class JobRegistry {
       console.error(`[jobs] ${name} failed (${failures} consecutive):`, errorMsg);
 
       try {
-        await this.telegram.send(
-          `⚠️ Job <b>${name}</b> failed: ${errorMsg}`,
-          { parseMode: 'HTML' },
-        );
+        await this.sendJobOutput(name, `⚠️ Job <b>${name}</b> failed: ${errorMsg}`);
       } catch {
-        // If we can't notify, just log
         console.error(`[jobs] Failed to send error notification for ${name}`);
       }
 
@@ -101,16 +104,37 @@ export class JobRegistry {
         managed.task?.stop();
         managed.task = null;
         try {
-          await this.telegram.send(
-            `🛑 Job <b>${name}</b> disabled after ${failures} consecutive failures.`,
-            { parseMode: 'HTML' },
-          );
+          await this.sendJobOutput(name, `🛑 Job <b>${name}</b> disabled after ${failures} consecutive failures.`);
         } catch {
           console.error(`[jobs] Failed to send disable notification for ${name}`);
         }
       }
 
       throw err;
+    }
+  }
+
+  /**
+   * Send job output to the appropriate channels.
+   * Tries ChannelGateway first, falls back to legacy TelegramService.
+   */
+  private async sendJobOutput(jobName: string, output: string): Promise<void> {
+    if (this.channelGateway) {
+      // Use all enabled communication channels
+      const channels = this.db.getCommunicationChannels();
+      const enabled = channels.filter((ch) => ch.enabled);
+      if (enabled.length > 0) {
+        await this.channelGateway.notify(
+          enabled.map((ch) => ch.id),
+          { body: output },
+        );
+        return;
+      }
+    }
+
+    // Fallback to legacy Telegram
+    if (this.telegram) {
+      await this.telegram.send(output, { parseMode: 'HTML' });
     }
   }
 }

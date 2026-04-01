@@ -3,6 +3,7 @@ import { config } from './config/env.js';
 import { DatabaseService } from './services/database.js';
 import { GitSync } from './services/git.js';
 import { TelegramService } from './services/telegram.js';
+import { ChannelGateway } from './channels/gateway.js';
 import { createVaultTools } from './tools/vault.js';
 import { CtoAgent } from './agent.js';
 import { AgentService } from './services/agent-service.js';
@@ -197,11 +198,52 @@ async function main() {
   const orchestrator = new Orchestrator(db, agentService, runtimeRegistry);
   console.log('[init] Orchestrator ready.');
 
+  // Communication channel gateway
+  const channelGateway = new ChannelGateway(db, orchestrator);
+
+  // Auto-create a Telegram communication channel from env vars (backward compat)
+  // Disabled — channels should be created via the UI/API instead.
+  // if (config.telegramBotToken && config.telegramChatId) {
+  //   const existing = db.getCommunicationChannelsByPlatform('telegram');
+  //   const envChannelExists = existing.some((ch) => {
+  //     try {
+  //       const cfg = JSON.parse(ch.config);
+  //       return cfg.bot_token === config.telegramBotToken && cfg.chat_id === config.telegramChatId;
+  //     } catch { return false; }
+  //   });
+  //   if (!envChannelExists) {
+  //     db.createCommunicationChannel({
+  //       id: 'telegram-env',
+  //       name: 'Telegram (env)',
+  //       platform: 'telegram',
+  //       direction: 'bidirectional',
+  //       agent_id: null,
+  //       config: JSON.stringify({ bot_token: config.telegramBotToken, chat_id: config.telegramChatId }),
+  //       enabled: 1,
+  //     });
+  //     console.log('[init] Auto-created Telegram channel from env vars.');
+  //   }
+  // }
+
+  // Wire optional services into gateway
+  channelGateway.setKnowledgeIngestion(knowledge);
+
+  // Start all enabled communication channels
+  await channelGateway.startAll();
+  console.log(`[init] Channel gateway started (${channelGateway.size} channels).`);
+
   // Register commands + message handler (only if Telegram is configured)
   const jobRegistry = new JobRegistry(telegram!, db);
+  jobRegistry.setChannelGateway(channelGateway);
   const eodCollector = new ResponseCollector();
 
-  if (telegram) {
+  // Legacy Telegram bot: only start if ChannelGateway is NOT already handling Telegram.
+  // The gateway auto-creates a channel from env vars, so this block is skipped when
+  // the gateway is running (avoids duplicate getUpdates conflict).
+  const gatewayHandlesTelegram = channelGateway.size > 0 &&
+    db.getCommunicationChannelsByPlatform('telegram').some((ch) => ch.enabled);
+
+  if (telegram && !gatewayHandlesTelegram) {
     registerCommands({ telegram, agent, vault: vaultTools, gitSync, shiplens, jira, github });
 
     telegram.onMessage(async (text, messageId) => {
@@ -230,6 +272,9 @@ async function main() {
     });
 
     telegram.start();
+    console.log('[init] Legacy Telegram bot started.');
+  } else if (telegram && gatewayHandlesTelegram) {
+    console.log('[init] Legacy Telegram bot skipped — ChannelGateway handles Telegram.');
   }
 
   // Phase 6: Authentication — using built-in email/password (better-auth disabled due to module conflict)
@@ -237,7 +282,7 @@ async function main() {
   console.log('[init] Auth: email/password via built-in routes.');
 
   jobRegistry.start();
-  const apiServer = startApiServer({ agent, agentService, orchestrator, db, gitSync, jobRegistry, knowledgeManager, notificationManager, auth, mcpGateway, runtimeRegistry });
+  const apiServer = startApiServer({ agent, agentService, orchestrator, db, gitSync, jobRegistry, knowledgeManager, notificationManager, auth, mcpGateway, runtimeRegistry, channelGateway });
 
   console.log(`[${new Date().toISOString()}] CTO Agent running. All phases loaded.`);
 
@@ -245,6 +290,7 @@ async function main() {
   const shutdown = async () => {
     console.log('\nShutting down...');
     jobRegistry.stop();
+    await channelGateway.stopAll();
     telegram?.stop();
     transcriptProcessor?.stop();
     await shiplens?.disconnect();

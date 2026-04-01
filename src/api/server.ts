@@ -15,6 +15,7 @@ import { settingsRoutes } from './routes/settings.js';
 import { knowledgeRoutes } from './routes/knowledge.js';
 import { scheduleRoutes } from './routes/schedules.js';
 import { notificationRoutes } from './routes/notifications.js';
+import { channelRoutes } from './routes/channels.js';
 import { orchestratorRoutes } from './routes/orchestrator.js';
 import { mcpProxyRoutes } from './routes/mcp-proxy.js';
 import { authRoutes } from './routes/auth.js';
@@ -40,6 +41,7 @@ import type { Orchestrator } from '../orchestrator/index.js';
 import type { McpGateway } from '../services/mcp-gateway.js';
 import type { RuntimeRegistry } from '../runtime/index.js';
 import type { DockerRuntime } from '../runtime/docker.js';
+import type { ChannelGateway } from '../channels/gateway.js';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
@@ -55,6 +57,7 @@ export interface ApiDeps {
   auth?: BetterAuthInstance;
   mcpGateway?: McpGateway;
   runtimeRegistry?: RuntimeRegistry;
+  channelGateway?: ChannelGateway;
 }
 
 /** Middleware: require admin role for mutating operations. */
@@ -134,6 +137,11 @@ export function createApi(deps: ApiDeps) {
   // Notification routes (requires NotificationManager)
   if (deps.notificationManager) {
     app.route('/api', notificationRoutes({ db: deps.db, notificationManager: deps.notificationManager }));
+  }
+
+  // Communication channel routes
+  if (deps.channelGateway) {
+    app.route('/api', channelRoutes({ db: deps.db, channelGateway: deps.channelGateway }));
   }
 
   // Orchestrator routes (task assign, council, approvals)
