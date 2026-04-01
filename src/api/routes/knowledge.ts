@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import type { DatabaseService } from '../../services/database.js';
 import type { KnowledgeManager } from '../../knowledge/manager.js';
 import { ObsidianAdapter, scanVaultPath } from '../../knowledge/adapters/obsidian.js';
+import { VectorStoreService } from '../../services/vector-store.js';
+import { config } from '../../config/env.js';
 
 export interface KnowledgeDeps {
   db: DatabaseService;
@@ -47,10 +49,19 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
     if (body.type === 'obsidian') {
       try {
         const sourceConfig = body.config ?? {};
+        let vs: VectorStoreService | undefined;
+        if (config.chromaUrl) {
+          vs = new VectorStoreService(sourceConfig.vaultPath || sourceConfig.path || config.vaultPath, `knowledge-${id}`);
+          try {
+            await vs.initialize();
+          } catch {
+            vs = undefined;
+          }
+        }
         const adapter = new ObsidianAdapter(id, {
           vaultPath: sourceConfig.vaultPath || sourceConfig.path || '',
           rootScope: sourceConfig.rootScope,
-        });
+        }, vs);
         deps.knowledgeManager.register(adapter);
       } catch (err) {
         console.error(`[knowledge] Failed to register adapter for ${id}:`, err);
