@@ -5,7 +5,6 @@ import {
   type AppendMessage,
 } from '@assistant-ui/react';
 import { api } from './api';
-import type { WsMessage } from './ws';
 
 function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -49,13 +48,79 @@ function convertMessage(msg: ChatMessage): ThreadMessageLike {
   };
 }
 
+/**
+ * Send a chat message via SSE (POST with streaming response).
+ * Returns an async iterable of SSE events.
+ */
+async function* streamChat(text: string, agentId?: string): AsyncGenerator<{ event: string; data: string }> {
+  const token = localStorage.getItem('api_token') ?? '';
+  const response = await fetch('/api/chat', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ text, agentId }),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    yield { event: 'error', data: JSON.stringify({ error: err }) };
+    return;
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    yield { event: 'error', data: JSON.stringify({ error: 'No response body' }) };
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // Parse SSE lines
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? ''; // keep incomplete line in buffer
+
+    let currentEvent = 'message';
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        yield { event: currentEvent, data: line.slice(6) };
+        currentEvent = 'message';
+      }
+      // Skip empty lines and comments
+    }
+  }
+
+  // Process remaining buffer
+  if (buffer.trim()) {
+    const lines = buffer.split('\n');
+    let currentEvent = 'message';
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        yield { event: currentEvent, data: line.slice(6) };
+      }
+    }
+  }
+}
+
 export function useTelaRuntime(agentId?: string, threadId?: string | null) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [currentThreadId, setCurrentThreadId] = useState<string | null>(threadId ?? null);
   const threadIdRef = useRef<string | null>(currentThreadId);
-  const wsRef = useRef<WebSocket | null>(null);
-  const pendingAssistantId = useRef<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Keep ref in sync
   useEffect(() => { threadIdRef.current = currentThreadId; }, [currentThreadId]);
@@ -67,7 +132,6 @@ export function useTelaRuntime(agentId?: string, threadId?: string | null) {
       setCurrentThreadId(null);
       return;
     }
-    // Clear immediately to prevent flash of old messages
     setMessages([]);
     setCurrentThreadId(threadId);
     api.getThread(threadId).then((thread) => {
@@ -83,69 +147,6 @@ export function useTelaRuntime(agentId?: string, threadId?: string | null) {
       setMessages([]);
     });
   }, [threadId]);
-
-  // WebSocket
-  useEffect(() => {
-    const token = localStorage.getItem('api_token') ?? '';
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(`${protocol}//${window.location.host}/api/chat/stream?token=${token}`);
-    } catch {
-      return;
-    }
-
-    ws.onmessage = (event) => {
-      let msg: WsMessage;
-      try { msg = JSON.parse(event.data as string); } catch { return; }
-
-      switch (msg.type) {
-        case 'thinking':
-          setIsRunning(true);
-          break;
-        case 'text': {
-          const id = pendingAssistantId.current || generateId();
-          pendingAssistantId.current = null;
-          const content = msg.data as string;
-          setMessages((prev) => {
-            const existing = prev.find((m) => m.id === id);
-            if (existing) return prev.map((m) => m.id === id ? { ...m, content } : m);
-            return [...prev, { id, role: 'assistant', content, timestamp: new Date() }];
-          });
-          // Persist assistant response
-          if (threadIdRef.current) {
-            api.addMessage(threadIdRef.current, 'assistant', content).catch(() => {});
-          }
-          setIsRunning(false);
-          break;
-        }
-        case 'tool_calls': {
-          const toolCalls = msg.data as ChatMessage['toolCalls'];
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last?.role === 'assistant') {
-              return [...prev.slice(0, -1), { ...last, toolCalls: [...(last.toolCalls ?? []), ...(toolCalls ?? [])] }];
-            }
-            return prev;
-          });
-          break;
-        }
-        case 'done':
-          setIsRunning(false);
-          break;
-        case 'error':
-          setIsRunning(false);
-          pendingAssistantId.current = null;
-          setMessages((prev) => [...prev, { id: generateId(), role: 'assistant', content: `Error: ${msg.data}`, timestamp: new Date() }]);
-          break;
-      }
-    };
-
-    ws.onerror = () => console.warn('[ws] WebSocket connection error');
-    wsRef.current = ws;
-    return () => { ws.close(); wsRef.current = null; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // WS connection is independent of threads — don't recreate
 
   const onNew = useCallback(
     async (message: AppendMessage) => {
@@ -163,7 +164,6 @@ export function useTelaRuntime(agentId?: string, threadId?: string | null) {
           tid = thread.id;
           setCurrentThreadId(tid);
           threadIdRef.current = tid;
-          // Update URL without full reload
           window.history.replaceState(null, '', `#/chat/${tid}`);
         } catch {
           // Continue without persistence
@@ -175,22 +175,60 @@ export function useTelaRuntime(agentId?: string, threadId?: string | null) {
       setMessages((prev) => [...prev, userMsg]);
       if (tid) api.addMessage(tid, 'user', userText).catch(() => {});
 
-      // Placeholder for assistant
+      // Placeholder assistant message (shows "Thinking...")
       const assistantId = generateId();
-      pendingAssistantId.current = assistantId;
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date() }]);
       setIsRunning(true);
 
-      // Always use REST — simpler and reliable
+      // Stream via SSE
       try {
-        const res = await api.sendMessage(userText, agentId);
-        pendingAssistantId.current = null;
-        setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, content: res.text } : m));
-        if (tid) api.addMessage(tid, 'assistant', res.text).catch(() => {});
+        let fullText = '';
+
+        for await (const { event, data } of streamChat(userText, agentId)) {
+          switch (event) {
+            case 'thinking':
+              // Already showing placeholder
+              break;
+
+            case 'text': {
+              const parsed = JSON.parse(data);
+              fullText = parsed.text ?? '';
+              setMessages((prev) =>
+                prev.map((m) => m.id === assistantId ? { ...m, content: fullText } : m)
+              );
+              break;
+            }
+
+            case 'tool_calls': {
+              const parsed = JSON.parse(data);
+              setMessages((prev) =>
+                prev.map((m) => m.id === assistantId ? { ...m, toolCalls: parsed.toolCalls } : m)
+              );
+              break;
+            }
+
+            case 'done':
+              // Persist assistant response
+              if (tid && fullText) {
+                api.addMessage(tid, 'assistant', fullText).catch(() => {});
+              }
+              break;
+
+            case 'error': {
+              const parsed = JSON.parse(data);
+              fullText = `Error: ${parsed.error}`;
+              setMessages((prev) =>
+                prev.map((m) => m.id === assistantId ? { ...m, content: fullText } : m)
+              );
+              break;
+            }
+          }
+        }
       } catch (err) {
-        pendingAssistantId.current = null;
         const errText = `Error: ${err instanceof Error ? err.message : 'Unknown error'}`;
-        setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, content: errText } : m));
+        setMessages((prev) =>
+          prev.map((m) => m.id === assistantId ? { ...m, content: errText } : m)
+        );
       } finally {
         setIsRunning(false);
       }
@@ -198,7 +236,10 @@ export function useTelaRuntime(agentId?: string, threadId?: string | null) {
     [agentId, currentThreadId],
   );
 
-  const onCancel = useCallback(async () => { setIsRunning(false); }, []);
+  const onCancel = useCallback(async () => {
+    abortRef.current?.abort();
+    setIsRunning(false);
+  }, []);
 
   const runtime = useExternalStoreRuntime({
     messages,
