@@ -488,19 +488,21 @@ export class DatabaseService {
     source: string;
     input: string;
     output: string;
+    agentId?: string;
     toolCalls?: unknown[];
     tokensIn?: number;
     tokensOut?: number;
     durationMs?: number;
   }): void {
     this.db.prepare(`
-      INSERT INTO conversations (timestamp, source, input, output, tool_calls, tokens_in, tokens_out, duration_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO conversations (timestamp, source, input, output, agent_id, tool_calls, tokens_in, tokens_out, duration_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       new Date().toISOString(),
       data.source,
       data.input,
       data.output,
+      data.agentId ?? null,
       data.toolCalls ? JSON.stringify(data.toolCalls) : null,
       data.tokensIn ?? null,
       data.tokensOut ?? null,
@@ -508,7 +510,15 @@ export class DatabaseService {
     );
   }
 
-  getRecentConversations(source: string, limit = 10): ConversationRow[] {
+  getRecentConversations(source: string, limit = 10, agentId?: string): ConversationRow[] {
+    if (agentId) {
+      return this.db.prepare(`
+        SELECT * FROM conversations
+        WHERE source = ? AND agent_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+      `).all(source, agentId, limit) as ConversationRow[];
+    }
     return this.db.prepare(`
       SELECT * FROM conversations
       WHERE source = ?

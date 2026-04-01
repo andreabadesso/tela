@@ -245,9 +245,9 @@ export class AgentService {
     // Pull latest vault changes before processing
     await this.gitSync.pull();
 
-    // Build context from recent history
+    // Build context from recent history (scoped to this agent)
     const recentHistory = this.db
-      .getRecentConversations(input.source, 10)
+      .getRecentConversations(input.source, 10, agentId)
       .reverse()
       .map((c) => `User: ${c.input}\nAssistant: ${c.output}`)
       .join('\n\n');
@@ -378,11 +378,12 @@ export class AgentService {
 
     const durationMs = Date.now() - startTime;
 
-    // Log conversation
+    // Log conversation (scoped to agent)
     this.db.logConversation({
       source: input.source,
       input: input.text,
       output: resultText,
+      agentId,
       durationMs,
     });
 
