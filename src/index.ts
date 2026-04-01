@@ -10,6 +10,7 @@ import { JobRegistry } from './jobs/registry.js';
 import { registerCommands } from './handlers/index.js';
 import { startApiServer } from './api/server.js';
 import { ResponseCollector } from './services/response-collector.js';
+import { createRuntimeRegistry } from './runtime/index.js';
 
 // Optional Phase 2-4 services
 import { GoogleAuthService } from './services/google-auth.js';
@@ -186,8 +187,14 @@ async function main() {
   await notificationManager.loadFromDb();
   console.log(`[init] Notification manager loaded (${notificationManager.size} channels).`);
 
+  // Agent runtime registry
+  const runtimeRegistry = createRuntimeRegistry(agentService, db, {
+    image: config.agentDockerImage,
+    hostCallbackPort: config.port,
+  });
+
   // Multi-agent orchestrator
-  const orchestrator = new Orchestrator(db, agentService);
+  const orchestrator = new Orchestrator(db, agentService, runtimeRegistry);
   console.log('[init] Orchestrator ready.');
 
   // Register commands + message handler (only if Telegram is configured)
@@ -230,7 +237,7 @@ async function main() {
   console.log('[init] Auth: email/password via built-in routes.');
 
   jobRegistry.start();
-  const apiServer = startApiServer({ agent, agentService, orchestrator, db, gitSync, jobRegistry, knowledgeManager, notificationManager, auth });
+  const apiServer = startApiServer({ agent, agentService, orchestrator, db, gitSync, jobRegistry, knowledgeManager, notificationManager, auth, mcpGateway, runtimeRegistry });
 
   console.log(`[${new Date().toISOString()}] CTO Agent running. All phases loaded.`);
 

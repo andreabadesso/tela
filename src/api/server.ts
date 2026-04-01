@@ -16,11 +16,14 @@ import { knowledgeRoutes } from './routes/knowledge.js';
 import { scheduleRoutes } from './routes/schedules.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { orchestratorRoutes } from './routes/orchestrator.js';
+import { mcpProxyRoutes } from './routes/mcp-proxy.js';
 import { authRoutes } from './routes/auth.js';
 import { adminRoutes } from './routes/admin.js';
 import { userConnectionRoutes } from './routes/user-connections.js';
 import { setupRoutes } from './routes/setup.js';
 import { threadRoutes } from './routes/threads.js';
+import { memoryRoutes } from './routes/memories.js';
+import { preferenceRoutes } from './routes/preferences.js';
 import { authMiddleware, createAuthMiddleware } from './middleware.js';
 import type { AuthUser } from './middleware.js';
 import { RbacService } from '../services/rbac.js';
@@ -34,6 +37,9 @@ import type { JobRegistry } from '../jobs/registry.js';
 import type { KnowledgeManager } from '../knowledge/manager.js';
 import type { NotificationManager } from '../notifications/manager.js';
 import type { Orchestrator } from '../orchestrator/index.js';
+import type { McpGateway } from '../services/mcp-gateway.js';
+import type { RuntimeRegistry } from '../runtime/index.js';
+import type { DockerRuntime } from '../runtime/docker.js';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
@@ -47,6 +53,8 @@ export interface ApiDeps {
   knowledgeManager: KnowledgeManager;
   notificationManager?: NotificationManager;
   auth?: BetterAuthInstance;
+  mcpGateway?: McpGateway;
+  runtimeRegistry?: RuntimeRegistry;
 }
 
 /** Middleware: require admin role for mutating operations. */
@@ -73,6 +81,10 @@ export function createApi(deps: ApiDeps) {
 
   // Health (no auth required)
   app.route('/api', healthRoutes(deps));
+
+  // Internal MCP proxy (no auth — accessed by agent containers via run-scoped headers)
+  const dockerRuntime = deps.runtimeRegistry?.get('docker') as DockerRuntime | undefined;
+  app.route('', mcpProxyRoutes({ db: deps.db, mcpGateway: deps.mcpGateway, dockerRuntime }));
 
   // Auth routes BEFORE auth middleware (sign-up, sign-in, sign-out, get-session don't require auth)
   app.route('/api', authRoutes());
@@ -107,6 +119,8 @@ export function createApi(deps: ApiDeps) {
   // API routes
   app.route('/api', chatRoutes(deps));
   app.route('/api', threadRoutes(deps));
+  app.route('/api', memoryRoutes({ db: deps.db }));
+  app.route('/api', preferenceRoutes({ db: deps.db }));
   app.route('/api', conversationRoutes(deps));
   app.route('/api', agentRoutes(deps));
   app.route('/api', connectionRoutes(deps));

@@ -25,7 +25,10 @@ import type {
   AgentPolicyRow,
   UserConnectionRow,
   McpToolClassificationRow,
+  AgentMemoryRow,
+  AgentBehaviorConfigRow,
 } from '../types/index.js';
+import type { AgentRunRow } from '../types/runtime.js';
 
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'agent.db');
 
@@ -1182,6 +1185,157 @@ export class DatabaseService {
   deleteToolClassification(id: string): boolean {
     const result = this.db.prepare('DELETE FROM mcp_tool_classifications WHERE id = ?').run(id);
     return result.changes > 0;
+  }
+
+  // ─── Agent Runs ────────────────────────────────────────────────
+
+  createAgentRun(data: { id: string; agent_id: string; runtime: string; input: string }): AgentRunRow {
+    this.db.prepare(`
+      INSERT INTO agent_runs (id, agent_id, runtime, status, input)
+      VALUES (?, ?, ?, 'pending', ?)
+    `).run(data.id, data.agent_id, data.runtime, data.input);
+    return this.getAgentRun(data.id)!;
+  }
+
+  getAgentRun(id: string): AgentRunRow | undefined {
+    return this.db.prepare('SELECT * FROM agent_runs WHERE id = ?').get(id) as AgentRunRow | undefined;
+  }
+
+  getAgentRuns(agentId?: string, limit = 50): AgentRunRow[] {
+    if (agentId) {
+      return this.db.prepare('SELECT * FROM agent_runs WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?').all(agentId, limit) as AgentRunRow[];
+    }
+    return this.db.prepare('SELECT * FROM agent_runs ORDER BY created_at DESC LIMIT ?').all(limit) as AgentRunRow[];
+  }
+
+  updateAgentRun(id: string, data: Partial<Pick<AgentRunRow, 'status' | 'output' | 'container_id' | 'started_at' | 'completed_at' | 'duration_ms' | 'error' | 'resource_usage'>>): AgentRunRow | undefined {
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, val] of Object.entries(data)) {
+      fields.push(`${key} = ?`);
+      values.push(val);
+    }
+    if (fields.length === 0) return this.getAgentRun(id);
+    values.push(id);
+    this.db.prepare(`UPDATE agent_runs SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    return this.getAgentRun(id);
+  }
+
+  // ─── Agent Memories CRUD ────────────────────────────────────
+
+  createMemory(data: {
+    agent_id: string;
+    user_id?: string | null;
+    scope?: 'global' | 'user';
+    type: string;
+    name: string;
+    description: string;
+    content: string;
+    source?: string;
+    stale_after_days?: number | null;
+  }): AgentMemoryRow {
+    const id = crypto.randomUUID();
+    this.db.prepare(`
+      INSERT INTO agent_memories (id, agent_id, user_id, scope, type, name, description, content, source, stale_after_days)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      data.agent_id,
+      data.user_id ?? null,
+      data.scope ?? 'global',
+      data.type,
+      data.name,
+      data.description,
+      data.content,
+      data.source ?? 'auto',
+      data.stale_after_days ?? null,
+    );
+    return this.getMemory(id)!;
+  }
+
+  getMemory(id: string): AgentMemoryRow | undefined {
+    return this.db.prepare('SELECT * FROM agent_memories WHERE id = ?').get(id) as AgentMemoryRow | undefined;
+  }
+
+  getMemories(agentId: string, opts?: { userId?: string; scope?: string; type?: string; limit?: number }): AgentMemoryRow[] {
+    const conditions: string[] = ['agent_id = ?'];
+    const params: unknown[] = [agentId];
+    if (opts?.userId) { conditions.push('user_id = ?'); params.push(opts.userId); }
+    if (opts?.scope) { conditions.push('scope = ?'); params.push(opts.scope); }
+    if (opts?.type) { conditions.push('type = ?'); params.push(opts.type); }
+    const limit = opts?.limit ?? 100;
+    params.push(limit);
+    return this.db.prepare(
+      `SELECT * FROM agent_memories WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC LIMIT ?`
+    ).all(...params) as AgentMemoryRow[];
+  }
+
+  searchMemories(agentId: string, queryStr: string, opts?: { userId?: string; scope?: string; limit?: number }): AgentMemoryRow[] {
+    const conditions: string[] = ['agent_id = ?'];
+    const params: unknown[] = [agentId];
+    const likePattern = `%${queryStr}%`;
+    conditions.push('(name LIKE ? OR description LIKE ? OR content LIKE ?)');
+    params.push(likePattern, likePattern, likePattern);
+    if (opts?.userId) { conditions.push('user_id = ?'); params.push(opts.userId); }
+    if (opts?.scope === 'global') { conditions.push('scope = ?'); params.push('global'); }
+    else if (opts?.scope === 'user') { conditions.push('scope = ?'); params.push('user'); }
+    const limit = opts?.limit ?? 20;
+    params.push(limit);
+    return this.db.prepare(
+      `SELECT * FROM agent_memories WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC LIMIT ?`
+    ).all(...params) as AgentMemoryRow[];
+  }
+
+  updateMemory(id: string, data: Partial<Pick<AgentMemoryRow, 'name' | 'description' | 'content' | 'type' | 'scope' | 'stale_after_days'>>): AgentMemoryRow | undefined {
+    const existing = this.getMemory(id);
+    if (!existing) return undefined;
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, val] of Object.entries(data)) {
+      fields.push(`${key} = ?`);
+      values.push(val);
+    }
+    fields.push("updated_at = datetime('now')");
+    values.push(id);
+    this.db.prepare(`UPDATE agent_memories SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    return this.getMemory(id);
+  }
+
+  deleteMemory(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM agent_memories WHERE id = ?').run(id);
+    return result.changes > 0;
+  }
+
+  // ─── Agent Behavior Config ────────────────────────────────────
+
+  getBehaviorConfig(agentId: string, userId?: string): AgentBehaviorConfigRow | undefined {
+    if (userId) {
+      const userConfig = this.db.prepare(
+        'SELECT * FROM agent_behavior_config WHERE agent_id = ? AND user_id = ?'
+      ).get(agentId, userId) as AgentBehaviorConfigRow | undefined;
+      if (userConfig) return userConfig;
+    }
+    // Fall back to default (null user_id)
+    return this.db.prepare(
+      'SELECT * FROM agent_behavior_config WHERE agent_id = ? AND user_id IS NULL'
+    ).get(agentId) as AgentBehaviorConfigRow | undefined;
+  }
+
+  setBehaviorConfig(agentId: string, userId: string | null, config: Record<string, unknown>): AgentBehaviorConfigRow {
+    const configJson = JSON.stringify(config);
+    const id = crypto.randomUUID();
+    this.db.prepare(`
+      INSERT INTO agent_behavior_config (id, agent_id, user_id, config)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(agent_id, user_id) DO UPDATE SET
+        config = excluded.config,
+        updated_at = datetime('now')
+    `).run(id, agentId, userId, configJson);
+    return this.db.prepare(
+      userId
+        ? 'SELECT * FROM agent_behavior_config WHERE agent_id = ? AND user_id = ?'
+        : 'SELECT * FROM agent_behavior_config WHERE agent_id = ? AND user_id IS NULL'
+    ).get(...(userId ? [agentId, userId] : [agentId])) as AgentBehaviorConfigRow;
   }
 
   // ─── Utilities ─────────────────────────────────────────────────

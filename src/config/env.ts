@@ -56,4 +56,12 @@ export const config = {
   // Phase 6 — Google SSO (optional, separate from Calendar integration)
   googleSsoClientId: optionalEnv('GOOGLE_SSO_CLIENT_ID'),
   googleSsoClientSecret: optionalEnv('GOOGLE_SSO_CLIENT_SECRET'),
+
+  // Phase 8 — Agent Runtime (optional)
+  agentRuntime: (optionalEnv('AGENT_RUNTIME') || 'agent-os') as 'in-process' | 'docker' | 'agent-os' | 'remote',
+  agentDockerImage: optionalEnv('AGENT_DOCKER_IMAGE') || 'tela-agent-worker:latest',
+  agentDefaultTimeout: parseInt(process.env.AGENT_DEFAULT_TIMEOUT || '300000', 10),
+
+  // Phase 9 — Agent Memory (optional)
+  agentMemoryEnabled: (optionalEnv('AGENT_MEMORY_ENABLED') ?? 'true') === 'true',
 };

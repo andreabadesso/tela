@@ -1,19 +1,25 @@
 import type { DatabaseService } from '../services/database.js';
 import type { AgentService } from '../services/agent-service.js';
 import type { AgentInput, AgentOutput } from '../types/index.js';
+import type { RuntimeRegistry } from '../runtime/index.js';
 
 export class Orchestrator {
+  private runtimeRegistry: RuntimeRegistry | null;
+
   constructor(
     private db: DatabaseService,
     private agentService: AgentService,
-  ) {}
+    runtimeRegistry?: RuntimeRegistry,
+  ) {
+    this.runtimeRegistry = runtimeRegistry ?? null;
+  }
 
   /**
-   * Chat mode: route to best agent based on input, then process.
+   * Chat mode: route to best agent based on input, then process via runtime.
    */
   async chat(input: AgentInput): Promise<AgentOutput> {
     const agentId = await this.resolveAgent(input);
-    return this.agentService.process(agentId, input);
+    return this.executeViaRuntime(agentId, input);
   }
 
   /**
@@ -37,10 +43,35 @@ export class Orchestrator {
     const results = await Promise.all(
       agentIds.map(async (id) => ({
         agentId: id,
-        output: await this.agentService.process(id, input),
+        output: await this.executeViaRuntime(id, input),
       })),
     );
     return results;
+  }
+
+  /**
+   * Execute an agent via the runtime registry.
+   * Falls back to direct AgentService.process() if no registry configured.
+   */
+  private async executeViaRuntime(agentId: string, input: AgentInput): Promise<AgentOutput> {
+    if (!this.runtimeRegistry) {
+      return this.agentService.process(agentId, input);
+    }
+
+    const agent = this.db.getAgent(agentId);
+    if (!agent) throw new Error(`Agent not found: ${agentId}`);
+
+    const runtime = this.runtimeRegistry.resolve(agent);
+
+    const handle = await runtime.execute({
+      agentId,
+      input,
+      config: agent,
+      mcpServers: [],
+      userId: input.userId,
+    });
+
+    return handle.result;
   }
 
   /**
@@ -100,11 +131,8 @@ export class Orchestrator {
         throw new Error('Budget limit exceeded');
       }
 
-      const result = await this.agentService.process(agentId, {
-        text: prompt,
-        source: 'cron',
-        // Background tasks don't have a user context
-      });
+      const input: AgentInput = { text: prompt, source: 'cron' };
+      const result = await this.executeViaRuntime(agentId, input);
 
       this.releaseCheckout(runId, 'completed');
       return result;
