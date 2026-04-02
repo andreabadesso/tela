@@ -44,40 +44,33 @@ Built on [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-sdk) and [
 
 ## System Map
 
-```
-                          ┌──────────────┐
-                          │   Frontend   │
-                          │  React + UI  │
-                          └──────┬───────┘
-                                 │
-                          ┌──────┴───────┐
-                          │   Hono API   │
-                          │  REST + WS   │
-                          └──────┬───────┘
-                                 │
-              ┌──────────────────┼──────────────────┐
-              │                  │                   │
-     ┌────────┴────────┐ ┌──────┴───────┐ ┌────────┴────────┐
-     │   Orchestrator   │ │  Auth + RBAC │ │   Scheduling    │
-     │  Agent Routing   │ │  Governance  │ │   Cron Jobs     │
-     └────────┬────────┘ └──────────────┘ └────────┬────────┘
-              │                                     │
-     ┌────────┴────────────────────────────────────┐
-     │              Agent Runtime                   │
-     │  (In-Process / Agent OS / Docker)            │
-     └────────┬──────────────┬─────────────────────┘
-              │              │
-     ┌────────┴────────┐ ┌──┴──────────────┐
-     │  MCP Gateway    │ │ Knowledge Mgr   │
-     │  Tool Governance│ │ Vector Search   │
-     └────────┬────────┘ └──┬──────────────┘
-              │             │
-     ┌────────┴─────┐  ┌───┴────────────┐
-     │ MCP Servers  │  │ Knowledge      │
-     │ Jira GitHub  │  │ Sources        │
-     │ Slack Google │  │ Obsidian FS    │
-     │ ShipLens ... │  │ Notion ...     │
-     └──────────────┘  └────────────────┘
+```mermaid
+graph TD
+    Frontend["Frontend<br/><i>React + Shadcn/ui</i>"] --> API["Hono API<br/><i>REST + WebSocket</i>"]
+
+    API --> Orchestrator["Orchestrator<br/><i>Agent Routing</i>"]
+    API --> Auth["Auth + RBAC<br/><i>Governance</i>"]
+    API --> Scheduling["Scheduling<br/><i>Cron Jobs</i>"]
+
+    Orchestrator --> Runtime["Agent Runtime<br/><i>In-Process / Agent OS / Docker</i>"]
+    Scheduling --> Runtime
+
+    Runtime --> Gateway["MCP Gateway<br/><i>Tool Governance</i>"]
+    Runtime --> Knowledge["Knowledge Manager<br/><i>Vector Search</i>"]
+
+    Gateway --> MCP["MCP Servers<br/><i>Jira · GitHub · Slack<br/>Google · ShipLens · ...</i>"]
+    Knowledge --> Sources["Knowledge Sources<br/><i>Obsidian · Filesystem<br/>Notion · Confluence</i>"]
+
+    style Frontend fill:#4f46e5,color:#fff
+    style API fill:#3b82f6,color:#fff
+    style Runtime fill:#8b5cf6,color:#fff
+    style Gateway fill:#f59e0b,color:#fff
+    style Knowledge fill:#10b981,color:#fff
+    style Auth fill:#6366f1,color:#fff
+    style Orchestrator fill:#6366f1,color:#fff
+    style Scheduling fill:#6366f1,color:#fff
+    style MCP fill:#f97316,color:#fff
+    style Sources fill:#059669,color:#fff
 ```
 
 ---
