@@ -12,8 +12,8 @@ import { createRuntimeRegistry } from './runtime/index.js';
 // Optional Phase 2-4 services
 import { GoogleAuthService } from './integrations/google-auth.js';
 import { CalendarService } from './integrations/calendar.js';
-import { TranscriptProcessor } from './services/transcript.js';
-import { KnowledgeIngestionService } from './services/knowledge.js';
+import { TranscriptProcessor } from './knowledge/transcript.js';
+import { KnowledgeIngestionService } from './knowledge/ingestion-service.js';
 import { VectorStoreService } from './agent/vector-store.js';
 import { NotificationManager } from './notifications/manager.js';
 import { Orchestrator } from './orchestrator/index.js';

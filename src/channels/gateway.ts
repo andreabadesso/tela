@@ -1,6 +1,6 @@
 import type { DatabaseService } from '../core/database.js';
 import type { Orchestrator } from '../orchestrator/index.js';
-import type { KnowledgeIngestionService } from '../services/knowledge.js';
+import type { KnowledgeIngestionService } from '../knowledge/ingestion-service.js';
 import type { CommunicationChannelRow } from '../types/index.js';
 import type { ChannelAdapter, InboundMessage, OutboundMessage } from './types.js';
 import { TelegramAdapter } from './adapters/telegram.js';

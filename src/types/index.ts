@@ -41,7 +41,6 @@ export interface JobDefinition {
   name: string;
   schedule: string;
   handler: () => Promise<string>;
-  channel: 'telegram' | string;
   enabled: boolean;
   type?: 'cron' | 'one_shot';
   runAt?: string;

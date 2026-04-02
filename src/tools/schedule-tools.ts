@@ -141,7 +141,6 @@ export function buildScheduleMcpServer(
           runAt: resolvedRunAt ?? undefined,
           targetChannel: resolvedTargetChannel ?? undefined,
           handler,
-          channel: 'telegram',
           enabled: true,
         });
         jobRegistry.startJob(jobName);
@@ -253,7 +252,6 @@ export function buildScheduleMcpServer(
               runAt: schedule.run_at ?? undefined,
               targetChannel: schedule.target_channel ?? undefined,
               handler,
-              channel: 'telegram',
               enabled: true,
             });
             jobRegistry.startJob(jobName);
@@ -304,7 +302,6 @@ export function buildScheduleMcpServer(
                 runAt: updated.run_at ?? undefined,
                 targetChannel: updated.target_channel ?? undefined,
                 handler,
-                channel: 'telegram',
                 enabled: true,
               });
               jobRegistry.startJob(jobName);

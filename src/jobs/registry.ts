@@ -74,7 +74,6 @@ export class JobRegistry {
         runAt: schedule.run_at ?? undefined,
         targetChannel: schedule.target_channel ?? undefined,
         handler,
-        channel: 'telegram',
         enabled: true,
       });
     }
