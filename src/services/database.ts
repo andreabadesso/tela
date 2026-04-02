@@ -582,6 +582,57 @@ export class DatabaseService {
     return result.changes > 0;
   }
 
+  // ─── Conversation Summaries ────────────────────────────────────
+
+  getActiveSummary(agentId: string, source: string): import('../types/index.js').ConversationSummaryRow | undefined {
+    return this.db.prepare(`
+      SELECT * FROM conversation_summaries
+      WHERE agent_id = ? AND source = ?
+      ORDER BY covers_to_id DESC
+      LIMIT 1
+    `).get(agentId, source) as import('../types/index.js').ConversationSummaryRow | undefined;
+  }
+
+  createConversationSummary(data: {
+    agent_id: string;
+    source: string;
+    summary: string;
+    covers_from_id: number;
+    covers_to_id: number;
+    conversation_count: number;
+    estimated_tokens: number;
+  }): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO conversation_summaries (id, agent_id, source, summary, covers_from_id, covers_to_id, conversation_count, estimated_tokens)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      data.agent_id,
+      data.source,
+      data.summary,
+      data.covers_from_id,
+      data.covers_to_id,
+      data.conversation_count,
+      data.estimated_tokens,
+    );
+  }
+
+  getConversationsOlderThan(agentId: string, source: string, beforeId: number, limit = 50): ConversationRow[] {
+    return this.db.prepare(`
+      SELECT * FROM conversations
+      WHERE agent_id = ? AND source = ? AND id < ?
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(agentId, source, beforeId, limit) as ConversationRow[];
+  }
+
+  getConversationCountForAgent(agentId: string, source: string): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) as count FROM conversations WHERE agent_id = ? AND source = ?
+    `).get(agentId, source) as { count: number };
+    return row.count;
+  }
+
   // ─── Job Runs ──────────────────────────────────────────────────
 
   startJobRun(jobName: string): number {

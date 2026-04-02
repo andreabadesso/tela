@@ -333,16 +333,8 @@ export class ChannelGateway {
         this.db.updateChannelThreadActivity(channel.id, msg.threadId);
       }
 
-      // 3. Load recent conversation context from the conversations table
-      // (AgentService.process() auto-logs conversations there, scoped by agent + source)
-      const recentConversations = this.db.getRecentConversations(channel.platform, 10, agentId);
-      let conversationContext = '';
-      if (recentConversations.length > 0) {
-        conversationContext = recentConversations
-          .reverse()
-          .map((c) => `User: ${c.input}\nAssistant: ${c.output}`)
-          .join('\n\n');
-      }
+      // Conversation history is handled by AgentService.process() — do NOT inject it here
+      // to avoid recursive nesting (gateway prepends → gets logged → loaded again next time)
 
       // 5. Build platform context metadata
       const platformContext = this.buildPlatformContext(msg);
@@ -384,11 +376,9 @@ export class ChannelGateway {
         else promptText += args ? `User said: "${args}"` : `Execute the /${cmd} action.`;
       }
 
-      // Build the full input with conversation context
+      // Build the input — conversation history is injected by AgentService.process()
       const input = {
-        text: conversationContext
-          ? `[Previous conversation in this thread]\n${conversationContext}\n\n[Current message]\n${promptText}`
-          : promptText,
+        text: promptText,
         source: channel.platform,
         metadata: {
           agentId,

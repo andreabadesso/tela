@@ -53,6 +53,19 @@ export interface ConversationRow {
   tokens_in: number | null;
   tokens_out: number | null;
   duration_ms: number | null;
+  agent_id: string | null;
+}
+
+export interface ConversationSummaryRow {
+  id: string;
+  agent_id: string;
+  source: string;
+  summary: string;
+  covers_from_id: number;
+  covers_to_id: number;
+  conversation_count: number;
+  estimated_tokens: number;
+  created_at: string;
 }
 
 export interface JobRunRow {

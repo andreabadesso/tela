@@ -18,7 +18,7 @@ export class RuntimeRegistry {
   private defaultRuntime: RuntimeType;
 
   constructor(defaultRuntime?: RuntimeType) {
-    this.defaultRuntime = defaultRuntime ?? (process.env.AGENT_RUNTIME as RuntimeType) ?? 'agent-os';
+    this.defaultRuntime = defaultRuntime ?? (process.env.AGENT_RUNTIME as RuntimeType) ?? 'in-process';
   }
 
   register(runtime: AgentRuntime): void {
@@ -108,7 +108,7 @@ export function createRuntimeRegistry(
     }
   }
 
-  const defaultName = process.env.AGENT_RUNTIME ?? 'agent-os';
+  const defaultName = process.env.AGENT_RUNTIME ?? 'in-process';
   console.log(`[runtime] Available: ${registry.listAvailable().join(', ')} (default: ${defaultName})`);
 
   return registry;

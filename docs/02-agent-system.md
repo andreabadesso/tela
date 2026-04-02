@@ -122,8 +122,8 @@ Each agent maintains memories per user (task 071):
 ### How It Works
 
 1. **Context Injection** — Before each response, relevant memories (global + user-specific) are injected into the system prompt (~4K token cap)
-2. **Auto-Extraction** — After each response, a fire-and-forget Haiku call extracts new memories from the conversation, deduplicating against existing ones
-3. **Manual Tools** — Agents have MCP tools: `remember`, `recall`, `forget`, `list_memories`, `get_user_context`
+2. **Proactive Saving via MCP Tools** — Agents are instructed in the system prompt to save important facts using the `remember` tool during their normal turn. No separate extraction subprocess.
+3. **MCP Tools Available** — `remember`, `recall`, `forget`, `list_memories`, `get_user_context`
 
 ### Behavior Configuration
 
@@ -137,10 +137,9 @@ Per agent per user, stored in `agent_behavior_config`:
 
 ### Gating
 
-Auto-extraction only runs when:
-- Feature is enabled
-- Not a cron/scheduled execution
-- Throttled (not every single turn)
+Memory features only active when:
+- `AGENT_MEMORY_ENABLED=true` (default: true)
+- Memory MCP tools are injected for interactive sources (web, telegram, agent)
 
 ## Agent Service
 
@@ -148,13 +147,12 @@ The `AgentService` (`src/services/agent-service.ts`) is the execution engine:
 
 1. Loads agent configuration from DB
 2. Builds system prompt with variable interpolation
-3. Loads conversation history
-4. Injects relevant memories
-5. Resolves governed MCP tools via gateway
-6. Calls Claude Agent SDK `query()` 
-7. Streams response tokens back via WebSocket
-8. Logs cost event (tokens, model, duration)
-9. Triggers memory auto-extraction (fire-and-forget)
+3. Builds budget-aware conversation history via `ConversationContextService`
+4. Injects relevant memories (16KB cap)
+5. Resolves governed MCP tools via gateway (filtered by agent's `mcp_servers` config)
+6. Calls Claude Agent SDK `query()`
+7. Logs conversation (only successful responses — errors are never logged)
+8. See [Conversation & Context](./13-conversation-and-context.md) for full details on history management
 
 ## Output Token Management
 

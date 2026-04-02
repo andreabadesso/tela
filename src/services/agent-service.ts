@@ -8,6 +8,7 @@ import type { KnowledgeManager } from '../knowledge/manager.js';
 import type { AgentInput, AgentOutput } from '../types/index.js';
 import { config } from '../config/env.js';
 import { buildMemoryContext, buildMemoryMcpServer } from './memory-service.js';
+import { ConversationContextService } from './context-manager.js';
 import type { ToolSandbox } from '../types/runtime.js';
 
 type VaultTools = ReturnType<typeof createVaultTools>;
@@ -245,13 +246,6 @@ export class AgentService {
     // Pull latest vault changes before processing
     await this.gitSync.pull();
 
-    // Build context from recent history (scoped to this agent)
-    const recentHistory = this.db
-      .getRecentConversations(input.source, 10, agentId)
-      .reverse()
-      .map((c) => `User: ${c.input}\nAssistant: ${c.output}`)
-      .join('\n\n');
-
     const today = new Date().toLocaleDateString('pt-BR', {
       timeZone: config.timezone,
       weekday: 'long',
@@ -265,13 +259,27 @@ export class AgentService {
     // Build memory context
     const memoryContext = buildMemoryContext(this.db, agentId, input.userId);
 
-    const systemPrompt = [
+    // Build history context with token budget awareness
+    const contextManager = new ConversationContextService(this.db);
+    const systemPromptBase = [
       interpolatedPrompt,
       `Today is ${today}.`,
       'Respond in Portuguese (BR) unless the message is in English.',
+    ].join('\n');
+
+    const historyContext = contextManager.buildHistoryContext({
+      agentId,
+      source: input.source,
+      model: agentConfig.model,
+      systemPromptBaseTokens: contextManager.estimateTokens(systemPromptBase),
+      memoryContextTokens: contextManager.estimateTokens(memoryContext),
+    });
+
+    const systemPrompt = [
+      systemPromptBase,
       memoryContext,
       '',
-      recentHistory ? `Recent conversation history:\n${recentHistory}` : '',
+      historyContext,
     ].filter(Boolean).join('\n');
 
     // Resolve MCP servers

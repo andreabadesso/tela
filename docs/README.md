@@ -34,6 +34,11 @@ Built on [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-sdk) and [
 | [Runtime & Execution](./09-runtime-and-execution.md) | Runtime abstraction, streaming, compaction, circuit breakers, cost optimization |
 | [Scheduling & Notifications](./10-scheduling-and-notifications.md) | Cron jobs, built-in schedules, notification channels, smart filtering |
 
+### Intelligence
+| Page | Description |
+|------|-------------|
+| [Conversation & Context](./13-conversation-and-context.md) | Context management, token budgets, compaction, history isolation, deduplication |
+
 ### Interface & Operations
 | Page | Description |
 |------|-------------|
