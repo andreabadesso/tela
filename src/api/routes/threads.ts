@@ -2,8 +2,10 @@ import { Hono } from 'hono';
 import type { DatabaseService } from '../../services/database.js';
 import type { AuthUser } from '../middleware.js';
 
+type Env = { Variables: { user: AuthUser } };
+
 export function threadRoutes(deps: { db: DatabaseService }) {
-  const app = new Hono();
+  const app = new Hono<Env>();
 
   // List threads for current user (optionally filter by agent)
   app.get('/threads', (c) => {

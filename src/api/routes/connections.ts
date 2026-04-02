@@ -1,6 +1,9 @@
 import { Hono } from 'hono';
 import type { DatabaseService } from '../../services/database.js';
 import { EncryptionService } from '../../services/encryption.js';
+import type { AuthUser } from '../middleware.js';
+
+type Env = { Variables: { user: AuthUser } };
 
 // ─── OAuth Provider Definitions ──────────────────────────────────
 
@@ -76,7 +79,7 @@ setInterval(() => {
 // ─── Routes ─────────────────────────────────────────────────────
 
 export function connectionRoutes(deps: { db: DatabaseService }) {
-  const app = new Hono();
+  const app = new Hono<Env>();
   const encryption = new EncryptionService();
 
   const getBaseUrl = (c: { req: { header: (name: string) => string | undefined; url: string } }): string => {

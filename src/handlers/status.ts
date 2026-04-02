@@ -18,7 +18,7 @@ export async function handleStatus(
     : 'Nunca';
 
   const gitStatus = await gitSync.status();
-  const hasChanges = gitStatus.files.length > 0;
+  const hasChanges = gitStatus?.files.length ? gitStatus.files.length > 0 : false;
 
   const msg = [
     '🤖 <b>Agent Status</b>',

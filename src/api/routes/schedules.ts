@@ -10,9 +10,13 @@ export function scheduleRoutes(deps: {
 }) {
   const app = new Hono();
 
-  // List all schedules
+  // List all schedules (optionally filter by status or type)
   app.get('/schedules', (c) => {
-    const schedules = deps.db.getSchedules();
+    let schedules = deps.db.getSchedules();
+    const status = c.req.query('status');
+    const type = c.req.query('type');
+    if (status) schedules = schedules.filter((s) => s.status === status);
+    if (type) schedules = schedules.filter((s) => s.type === type);
     return c.json(schedules);
   });
 

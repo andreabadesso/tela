@@ -39,8 +39,11 @@ export interface JobDefinition {
   name: string;
   schedule: string;
   handler: () => Promise<string>;
-  channel: 'telegram';
+  channel: 'telegram' | string;
   enabled: boolean;
+  type?: 'cron' | 'one_shot';
+  runAt?: string;
+  targetChannel?: string;
 }
 
 export interface ConversationRow {
@@ -128,6 +131,12 @@ export interface ScheduleRow {
   enabled: number;
   last_run_at: string | null;
   last_result: string | null;
+  type: 'cron' | 'one_shot';
+  mode: 'agent' | 'message';
+  run_at: string | null;
+  created_by_agent_id: string | null;
+  target_channel: string | null;
+  status: 'active' | 'completed' | 'disabled' | 'expired';
   created_at: string;
   updated_at: string;
 }

@@ -107,7 +107,7 @@ export function userConnectionRoutes(deps: { db: DatabaseService }) {
         type: conn.type,
         token_strategy: conn.token_strategy || 'company',
         company_status: conn.status,
-        user_status: conn.token_strategy === 'delegated'
+        user_status: conn.token_strategy === 'user'
           ? (userConn?.status || 'not_connected')
           : conn.status,
         user_connection_id: userConn?.id || null,
@@ -128,7 +128,7 @@ export function userConnectionRoutes(deps: { db: DatabaseService }) {
     const connection = deps.db.getConnection(connectionId);
     if (!connection) return c.json({ error: 'Connection not found' }, 404);
 
-    if (connection.token_strategy !== 'delegated') {
+    if (connection.token_strategy !== 'user') {
       return c.json({ error: 'This connection does not support user-delegated auth' }, 400);
     }
 

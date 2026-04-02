@@ -8,8 +8,10 @@ import type { KnowledgeManager } from '../knowledge/manager.js';
 import type { AgentInput, AgentOutput } from '../types/index.js';
 import { config } from '../config/env.js';
 import { buildMemoryContext, buildMemoryMcpServer } from './memory-service.js';
+import { buildScheduleMcpServer, type ScheduleToolsContext } from '../tools/schedule-tools.js';
 import { ConversationContextService } from './context-manager.js';
 import type { ToolSandbox } from '../types/runtime.js';
+import type { JobRegistry } from '../jobs/registry.js';
 
 type VaultTools = ReturnType<typeof createVaultTools>;
 
@@ -17,6 +19,7 @@ export class AgentService {
   private mcpServer;
   private mcpGateway: McpGateway | null;
   private knowledgeManager: KnowledgeManager | null;
+  private jobRegistry: JobRegistry | null = null;
 
   constructor(
     private db: DatabaseService,
@@ -28,6 +31,11 @@ export class AgentService {
     this.mcpServer = this.buildMcpServer();
     this.mcpGateway = mcpGateway ?? null;
     this.knowledgeManager = knowledgeManager ?? null;
+  }
+
+  /** Set the job registry so agents can schedule jobs via MCP tools. */
+  setScheduleDeps(jobRegistry: JobRegistry): void {
+    this.jobRegistry = jobRegistry;
   }
 
   private buildMcpServer(sandbox?: ToolSandbox) {
@@ -261,11 +269,45 @@ export class AgentService {
 
     // Build history context with token budget awareness
     const contextManager = new ConversationContextService(this.db);
-    const systemPromptBase = [
+    const now = new Date();
+    const currentTime = now.toLocaleTimeString('pt-BR', {
+      timeZone: config.timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const currentIso = now.toISOString();
+
+    const systemPromptParts = [
       interpolatedPrompt,
-      `Today is ${today}.`,
+      `Today is ${today}. Current time: ${currentTime} (${currentIso}).`,
       'Respond in Portuguese (BR) unless the message is in English.',
-    ].join('\n');
+    ];
+
+    if (this.jobRegistry) {
+      systemPromptParts.push(
+        '',
+        [
+          'You have scheduling capabilities via the schedule-tools MCP server.',
+          'When the user asks you to do something later, at a specific time, or on a recurring basis, use the schedule_job tool instead of doing it immediately.',
+          'For one-shot tasks use type "one_shot" with a run_at ISO datetime. For recurring tasks use type "cron" with a cron_expression.',
+          'You can also list and manage existing scheduled jobs.',
+          'ABSOLUTE RULE: NEVER refuse, question, or suggest alternatives to the timing the user asks for. 5 seconds, 10 seconds, 1 second — it does not matter. Schedule EXACTLY what was asked. Do NOT say "that is too short" or suggest longer times. Just call schedule_job immediately.',
+          'For short delays (under 5 minutes), ALWAYS use delay_seconds instead of run_at. This avoids timing issues. Example: "in 10 seconds" → delay_seconds: 10. "in 2 minutes" → delay_seconds: 120.',
+          '',
+          'IMPORTANT about scheduled job mode and prompts:',
+          '- Use mode "message" for simple notifications/reminders — the prompt text is delivered literally as-is. Example: user says "send me hi in 5 min" → mode: "message", prompt: "hi".',
+          '- Use mode "agent" for complex tasks that need agent processing — the prompt is executed by the agent and the result is delivered. Example: user says "generate a report in 1 hour" → mode: "agent", prompt: "Generate a daily report from the vault".',
+          '- Delivery is handled by target_channel — do NOT include delivery instructions in the prompt.',
+          '',
+          'IMPORTANT about target_channel (format: "platform:destination"):',
+          'If the request comes from a channel (e.g., Telegram, Slack), the source channel is used as the default — you do not need to ask.',
+          'But if the user asks to deliver the result to a DIFFERENT channel than the current one (e.g., "send it on Slack" while chatting on Telegram), you MUST set target_channel explicitly and ask which specific channel/user/group to send it to if unclear.',
+          'Never schedule a job to a channel without knowing the destination.',
+        ].join('\n'),
+      );
+    }
+
+    const systemPromptBase = systemPromptParts.join('\n');
 
     const historyContext = contextManager.buildHistoryContext({
       agentId,
@@ -314,6 +356,18 @@ export class AgentService {
       ? buildMemoryMcpServer(this.db, agentId, input.userId)
       : null;
 
+    // Build schedule MCP server (scoped to this agent + source channel)
+    const scheduleContext: ScheduleToolsContext = {
+      sourceChannelId: input.metadata?.channelId as string | undefined,
+      sourceThreadId: input.metadata?.threadId as string | undefined,
+      sourcePlatform: input.source !== 'web' && input.source !== 'schedule' && input.source !== 'cron'
+        ? input.source
+        : undefined,
+    };
+    const scheduleMcpServer = this.jobRegistry
+      ? buildScheduleMcpServer(this.db, this.jobRegistry, this, agentId, scheduleContext)
+      : null;
+
     // Resolve which MCP connections this agent is allowed to use
     const agentMcpServerIds: string[] = (() => {
       try { return JSON.parse(agentConfig.mcp_servers || '[]'); } catch { return []; }
@@ -326,6 +380,7 @@ export class AgentService {
         ...(!hasKnowledgeServers ? { 'vault-tools': vaultMcpServer } : {}),
         ...knowledgeServers,
         ...(memoryMcpServer ? { 'memory-tools': memoryMcpServer } : {}),
+        ...(scheduleMcpServer ? { 'schedule-tools': scheduleMcpServer } : {}),
         ...governedServers,
       };
     } else {
@@ -352,6 +407,7 @@ export class AgentService {
         ...(!hasKnowledgeServers ? { 'vault-tools': vaultMcpServer } : {}),
         ...knowledgeServers,
         ...(memoryMcpServer ? { 'memory-tools': memoryMcpServer } : {}),
+        ...(scheduleMcpServer ? { 'schedule-tools': scheduleMcpServer } : {}),
         ...filteredExternal,
       };
     }

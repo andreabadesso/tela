@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 
-export async function createAuth(dbPath: string) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function createAuth(dbPath: string): Promise<any> {
   const { betterAuth } = await import('better-auth');
   const db = new Database(dbPath);
 

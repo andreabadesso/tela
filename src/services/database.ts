@@ -231,9 +231,23 @@ export class DatabaseService {
   createSchedule(data: Omit<ScheduleRow, 'created_at' | 'updated_at'> & { id?: string }): ScheduleRow {
     const id = data.id || crypto.randomUUID();
     this.db.prepare(`
-      INSERT INTO schedules (id, name, cron_expression, agent_id, prompt, notification_channels, enabled)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, data.name, data.cron_expression, data.agent_id, data.prompt, data.notification_channels ?? '["telegram"]', data.enabled ?? 1);
+      INSERT INTO schedules (id, name, cron_expression, agent_id, prompt, notification_channels, enabled, type, mode, run_at, created_by_agent_id, target_channel, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      data.name,
+      data.cron_expression,
+      data.agent_id,
+      data.prompt,
+      data.notification_channels ?? '["telegram"]',
+      data.enabled ?? 1,
+      data.type ?? 'cron',
+      data.mode ?? 'agent',
+      data.run_at ?? null,
+      data.created_by_agent_id ?? null,
+      data.target_channel ?? null,
+      data.status ?? 'active',
+    );
     return this.getSchedule(id)!;
   }
 
@@ -265,6 +279,24 @@ export class DatabaseService {
       ORDER BY id DESC
       LIMIT ?
     `).all(`schedule:${scheduleId}`, limit) as JobRunRow[];
+  }
+
+  getSchedulesByCreator(agentId: string): ScheduleRow[] {
+    return this.db.prepare(
+      'SELECT * FROM schedules WHERE created_by_agent_id = ? ORDER BY created_at DESC',
+    ).all(agentId) as ScheduleRow[];
+  }
+
+  updateScheduleStatus(id: string, status: ScheduleRow['status']): void {
+    this.db.prepare(
+      "UPDATE schedules SET status = ?, updated_at = datetime('now') WHERE id = ?",
+    ).run(status, id);
+  }
+
+  getActiveSchedules(): ScheduleRow[] {
+    return this.db.prepare(
+      "SELECT * FROM schedules WHERE status = 'active' AND enabled = 1 ORDER BY created_at",
+    ).all() as ScheduleRow[];
   }
 
   // ─── Knowledge Sources CRUD ────────────────────────────────────

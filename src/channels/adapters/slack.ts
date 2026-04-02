@@ -30,9 +30,8 @@ export class SlackAdapter implements ChannelAdapter {
   ): Promise<void> {
     let App: any;
     try {
-      // @ts-expect-error — @slack/bolt is an optional peer dependency
       const bolt = await import('@slack/bolt');
-      App = bolt.default?.App ?? bolt.App;
+      App = bolt.App;
     } catch {
       throw new Error(
         'Slack adapter requires @slack/bolt. Install with: npm install @slack/bolt',
@@ -133,14 +132,83 @@ export class SlackAdapter implements ChannelAdapter {
 
     const { channel, threadTs } = this.decodeThreadId(platformThreadId);
 
-    const result = await this.app.client.chat.postMessage({
-      channel,
-      thread_ts: threadTs,
+    // Resolve @username or display name to a DM channel
+    const resolvedChannel = await this.resolveDestination(channel);
+
+    const postArgs: Record<string, any> = {
+      channel: resolvedChannel,
       text: message.text,
       mrkdwn: true,
-    });
+    };
+    // Only include thread_ts if it's a real timestamp (not "0" or empty)
+    if (threadTs && threadTs !== '0') {
+      postArgs.thread_ts = threadTs;
+    }
 
+    const result = await this.app.client.chat.postMessage(postArgs);
     return result.ts ?? '';
+  }
+
+  /**
+   * Resolve a destination string to a Slack channel ID.
+   * Handles: channel IDs (C...), @usernames, #channels, and user IDs (U...).
+   */
+  private async resolveDestination(destination: string): Promise<string> {
+    // Already a channel/DM ID
+    if (/^[CDGW][A-Z0-9]+$/.test(destination)) return destination;
+
+    // Strip leading @ or #
+    const clean = destination.replace(/^[@#]/, '');
+
+    // Try to find user by name and open a DM
+    if (destination.startsWith('@') || !destination.startsWith('#')) {
+      try {
+        const userList = await this.app.client.users.list({ limit: 200 });
+        const members = userList.members ?? [];
+        console.log(`[slack-adapter] Resolving "${clean}" — found ${members.length} users`);
+        const user = members.find(
+          (m: any) =>
+            m.name === clean ||
+            m.real_name?.toLowerCase() === clean.toLowerCase() ||
+            m.profile?.display_name?.toLowerCase() === clean.toLowerCase(),
+        );
+        if (user) {
+          console.log(`[slack-adapter] Matched user: ${user.name} (${user.id})`);
+          try {
+            const dm = await this.app.client.conversations.open({ users: user.id });
+            return dm.channel.id;
+          } catch (dmErr) {
+            console.error(`[slack-adapter] conversations.open failed for ${user.id}:`, dmErr instanceof Error ? dmErr.message : dmErr);
+            // Fall back to posting to the user ID directly — Slack accepts user IDs as channel targets for DMs
+            return user.id;
+          }
+        }
+        console.log(`[slack-adapter] No user matched "${clean}". Available names:`, members.slice(0, 10).map((m: any) => `${m.name} / ${m.real_name} / ${m.profile?.display_name}`));
+      } catch (err) {
+        console.error(`[slack-adapter] users.list failed:`, err instanceof Error ? err.message : err);
+      }
+    }
+
+    // Try as a channel name
+    try {
+      const channels = await this.app.client.conversations.list({
+        types: 'public_channel,private_channel',
+        limit: 200,
+      });
+      const found = (channels.channels ?? []).find(
+        (ch: any) => ch.name === clean,
+      );
+      if (found) {
+        console.log(`[slack-adapter] Matched channel: #${found.name} (${found.id})`);
+        return found.id;
+      }
+      console.log(`[slack-adapter] No channel matched "${clean}".`);
+    } catch (err) {
+      console.error(`[slack-adapter] conversations.list failed:`, err instanceof Error ? err.message : err);
+    }
+
+    console.warn(`[slack-adapter] Could not resolve "${destination}" — passing through as-is.`);
+    return destination;
   }
 
   async editMessage(platformThreadId: string, messageId: string, message: OutboundMessage): Promise<void> {
@@ -186,7 +254,6 @@ export class SlackAdapter implements ChannelAdapter {
 
   async test(config: Record<string, string>): Promise<boolean> {
     try {
-      // @ts-expect-error — @slack/web-api is an optional peer dependency
       const { WebClient } = await import('@slack/web-api');
       const client = new WebClient(config.bot_token);
       const result = await client.auth.test();
@@ -202,6 +269,10 @@ export class SlackAdapter implements ChannelAdapter {
 
   private decodeThreadId(threadId: string): { channel: string; threadTs: string } {
     const colonIndex = threadId.indexOf(':');
+    if (colonIndex === -1) {
+      // No colon — treat entire string as channel, no thread
+      return { channel: threadId, threadTs: '' };
+    }
     return {
       channel: threadId.slice(0, colonIndex),
       threadTs: threadId.slice(colonIndex + 1),

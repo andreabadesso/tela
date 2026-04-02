@@ -182,6 +182,53 @@ export class ChannelGateway {
     await Promise.all(promises);
   }
 
+  /**
+   * Send a notification to a specific target in "platform:destination" format.
+   * E.g., "telegram:123456789" or "slack:#general".
+   * Finds a running adapter for the platform and sends directly.
+   */
+  async notifyTarget(target: string, message: { body: string }): Promise<void> {
+    const colonIdx = target.indexOf(':');
+    if (colonIdx === -1) {
+      throw new Error(`Invalid target format "${target}" — expected "platform:destination"`);
+    }
+    const platform = target.slice(0, colonIdx);
+    let destination = target.slice(colonIdx + 1);
+
+    // Find a running adapter for this platform
+    for (const [id, adapter] of this.adapters) {
+      const channel = this.db.getCommunicationChannel(id);
+      if (channel?.platform === platform) {
+        // For Telegram, resolve non-numeric destinations to the channel's default chat_id
+        if (platform === 'telegram' && !/^\d+$/.test(destination)) {
+          const resolved = this.resolveDefaultDestination(channel, destination);
+          if (resolved) destination = resolved;
+        }
+        const outbound: OutboundMessage = platform === 'telegram'
+          ? { text: message.body, html: markdownToTelegramHtml(message.body) }
+          : { text: message.body };
+        await adapter.sendMessage(destination, outbound);
+        return;
+      }
+    }
+
+    // No running adapter — try to find a configured channel for this platform and start temporarily
+    const channels = this.db.getCommunicationChannels();
+    const match = channels.find((ch) => ch.platform === platform && ch.enabled);
+    if (!match) {
+      throw new Error(`No configured channel for platform "${platform}"`);
+    }
+    // Resolve non-numeric Telegram destinations
+    if (platform === 'telegram' && !/^\d+$/.test(destination)) {
+      const resolved = this.resolveDefaultDestination(match, destination);
+      if (resolved) destination = resolved;
+    }
+    const outbound: OutboundMessage = platform === 'telegram'
+      ? { text: message.body, html: markdownToTelegramHtml(message.body) }
+      : { text: message.body };
+    await this.send(match.id, destination, outbound);
+  }
+
   /** Broadcast a notification to all enabled channels. */
   async broadcastNotification(message: { title?: string; body: string; priority?: string }): Promise<void> {
     const channels = this.db.getCommunicationChannels();
@@ -202,6 +249,19 @@ export class ChannelGateway {
         return null; // Jira doesn't have a default thread
       default:
         return null;
+    }
+  }
+
+  /**
+   * Resolve a non-standard destination to the channel's default.
+   * For Telegram: non-numeric usernames/handles → configured chat_id.
+   */
+  private resolveDefaultDestination(channel: CommunicationChannelRow, _destination: string): string | null {
+    try {
+      const config = JSON.parse(channel.config);
+      return this.getDefaultThreadId(channel.platform, config);
+    } catch {
+      return null;
     }
   }
 

@@ -281,6 +281,16 @@ async function main() {
   const auth = undefined;
   console.log('[init] Auth: email/password via built-in routes.');
 
+  // Wire schedule tools into agents & load persisted schedules
+  agentService.setScheduleDeps(jobRegistry);
+  jobRegistry.onOneShotComplete = (jobName: string) => {
+    const scheduleId = jobName.replace('schedule:', '');
+    db.updateScheduleStatus(scheduleId, 'completed');
+    db.updateSchedule(scheduleId, { enabled: 0 });
+    console.log(`[jobs] One-shot schedule ${scheduleId} completed.`);
+  };
+  await jobRegistry.loadSchedulesFromDb(db, agentService);
+
   jobRegistry.start();
   const apiServer = startApiServer({ agent, agentService, orchestrator, db, gitSync, jobRegistry, knowledgeManager, notificationManager, auth, mcpGateway, runtimeRegistry, channelGateway });
 
