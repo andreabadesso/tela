@@ -12,15 +12,9 @@ import { createRuntimeRegistry } from './runtime/index.js';
 // Optional Phase 2-4 services
 import { GoogleAuthService } from './integrations/google-auth.js';
 import { CalendarService } from './integrations/calendar.js';
-import { GmailService } from './integrations/gmail.js';
-import { ShipLensService } from './integrations/shiplens.js';
-import { JiraService } from './integrations/jira.js';
-import { GitHubService } from './integrations/github.js';
 import { TranscriptProcessor } from './services/transcript.js';
 import { KnowledgeIngestionService } from './services/knowledge.js';
 import { VectorStoreService } from './agent/vector-store.js';
-import { PatternLearningService } from './services/pattern-learning.js';
-import { NotificationFilterService } from './services/notification-filter.js';
 import { NotificationManager } from './notifications/manager.js';
 import { Orchestrator } from './orchestrator/index.js';
 // import { createAuth } from './auth/index.js';
@@ -102,14 +96,12 @@ async function main() {
   // Phase 2: Google services (optional)
   let googleAuth: GoogleAuthService | null = null;
   let calendar: CalendarService | null = null;
-  let gmail: GmailService | null = null;
 
   if (config.googleClientId && config.googleClientSecret) {
     googleAuth = new GoogleAuthService(config.googleClientId, config.googleClientSecret, config.googleRedirectUri, db);
     if (googleAuth.isAuthenticated()) {
       calendar = new CalendarService(googleAuth);
-      gmail = new GmailService(googleAuth);
-      console.log('[init] Google Calendar + Gmail connected.');
+      console.log('[init] Google Calendar connected.');
     } else {
       console.log(`[init] Google not authenticated. Visit: ${googleAuth.getAuthUrl()}`);
     }
@@ -125,57 +117,6 @@ async function main() {
 
   // Phase 2: Knowledge ingestion
   const knowledge = new KnowledgeIngestionService(agentService, defaultAgentId, vaultTools, gitSync, notificationManager);
-
-  // Phase 3: ShipLens (optional)
-  let shiplens: ShipLensService | null = null;
-  if (config.shiplensUrl || config.shiplensCommand) {
-    shiplens = new ShipLensService();
-    try {
-      await shiplens.connect();
-      console.log('[init] ShipLens connected.');
-    } catch (err) {
-      console.error('[init] ShipLens connection failed:', err);
-      shiplens = null;
-    }
-  }
-
-  // Phase 3: Jira (optional)
-  let jira: JiraService | null = null;
-  if (config.jiraBaseUrl && config.jiraApiToken) {
-    jira = new JiraService();
-    console.log('[init] Jira connected.');
-  }
-
-  // Phase 3: GitHub (optional)
-  let github: GitHubService | null = null;
-  if (config.githubToken && config.githubOrg) {
-    github = new GitHubService();
-    console.log('[init] GitHub connected.');
-  }
-
-  // Phase 4: Vector store — per-source indexing handled by knowledge adapters
-  // Legacy single-collection fallback only if no knowledge sources registered
-  let vectorStore: VectorStoreService | null = null;
-  if (config.chromaUrl && knowledgeManager.getAll().length === 0) {
-    vectorStore = new VectorStoreService(config.vaultPath);
-    try {
-      await vectorStore.initialize();
-      if (vectorStore.isAvailable()) {
-        console.log('[init] ChromaDB connected (legacy). Starting initial index...');
-        const count = await vectorStore.indexAll();
-        console.log(`[init] Indexed ${count} vault files.`);
-      }
-    } catch (err) {
-      console.error('[init] ChromaDB failed:', err);
-      vectorStore = null;
-    }
-  } else if (config.chromaUrl) {
-    console.log('[init] ChromaDB: per-source collections managed by knowledge adapters.');
-  }
-
-  // Phase 4: Pattern learning + notification filtering
-  const patterns = new PatternLearningService(db);
-  const notificationFilter = new NotificationFilterService(db);
 
   // Agent runtime registry
   const runtimeRegistry = createRuntimeRegistry(agentService, db, {
@@ -220,7 +161,6 @@ async function main() {
     jobRegistry.stop();
     await channelGateway.stopAll();
     transcriptProcessor?.stop();
-    await shiplens?.disconnect();
     await mcpGateway?.disconnectAll();
     await gitSync.flush();
     apiServer.close();
@@ -231,8 +171,8 @@ async function main() {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 
-  // Suppress unused variable warnings for optionally-wired services
-  void gmail; void github; void jira; void vectorStore; void notificationFilter; void patterns; void googleAuth;
+  // Suppress unused variable warning for optionally-wired auth service
+  void googleAuth;
 }
 
 main().catch((err) => {
