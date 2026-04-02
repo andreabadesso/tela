@@ -6,7 +6,7 @@ import { PDFParse } from 'pdf-parse';
 import type { AgentService } from '../agent/service.js';
 import type { createVaultTools } from '../tools/vault.js';
 import type { GitSync } from '../core/git.js';
-import type { TelegramService } from './telegram.js';
+import type { NotificationManager } from '../notifications/manager.js';
 
 const execFileAsync = promisify(execFileCb);
 
@@ -64,7 +64,7 @@ export class KnowledgeIngestionService {
     private defaultAgentId: string,
     private vault: VaultTools,
     private gitSync: GitSync,
-    private telegram: TelegramService,
+    private notificationManager: NotificationManager,
   ) {}
 
   /**
@@ -80,10 +80,11 @@ export class KnowledgeIngestionService {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[knowledge] Parse failed for type=${type}:`, errorMsg);
       parsedContent = input;
-      await this.telegram.send(
-        `Erro ao processar conteudo (${type}): ${errorMsg}\nSalvando conteudo bruto.`,
-        { replyTo: messageId },
-      );
+      await this.notificationManager.broadcast({
+        body: `Erro ao processar conteudo (${type}): ${errorMsg}\nSalvando conteudo bruto.`,
+        priority: 'high',
+        source: 'knowledge',
+      });
     }
 
     // Process with Claude
@@ -130,7 +131,7 @@ export class KnowledgeIngestionService {
       }
     }
 
-    // Telegram response
+    // Notify result
     const relatedSection =
       content.relatedNotes.length > 0
         ? `\n\nNotas relacionadas:\n${content.relatedNotes.map((n) => `  - ${n}`).join('\n')}`
@@ -140,8 +141,8 @@ export class KnowledgeIngestionService {
       ? `\nSalvo em: ${content.savedTo}`
       : '\nNao salvo (classificado como ignore)';
 
-    const telegramMsg = [
-      `<b>${this.typeLabel(type)}</b> — ${content.classification}`,
+    const body = [
+      `${this.typeLabel(type)} — ${content.classification}`,
       '',
       content.summary,
       savedSection,
@@ -149,12 +150,14 @@ export class KnowledgeIngestionService {
     ].join('\n');
 
     try {
-      await this.telegram.send(telegramMsg, {
-        parseMode: 'HTML',
-        replyTo: messageId,
+      await this.notificationManager.broadcast({
+        title: `${this.typeLabel(type)} ingested`,
+        body,
+        priority: 'normal',
+        source: 'knowledge',
       });
     } catch (err) {
-      console.error('[knowledge] Failed to send Telegram response:', err);
+      console.error('[knowledge] Failed to send notification:', err);
     }
 
     return content;

@@ -4,7 +4,7 @@ import { basename, extname } from 'node:path';
 import type { AgentService } from '../agent/service.js';
 import type { createVaultTools } from '../tools/vault.js';
 import type { GitSync } from '../core/git.js';
-import type { TelegramService } from './telegram.js';
+import type { NotificationManager } from '../notifications/manager.js';
 import type { CalendarService, CalendarEvent } from '../integrations/calendar.js';
 
 const DEBOUNCE_MS = 5_000;
@@ -81,7 +81,7 @@ export class TranscriptProcessor {
     private defaultAgentId: string,
     private vault: VaultTools,
     private gitSync: GitSync,
-    private telegram: TelegramService,
+    private notificationManager: NotificationManager,
     private calendar: CalendarService | null,
   ) {}
 
@@ -247,15 +247,17 @@ After saving, respond with a short summary of what you saved and where. Portugue
       console.error('[transcript] Git push failed:', err);
     }
 
-    // Send Telegram notification
+    // Notify all configured channels
     try {
-      const telegramMsg = `<b>Reuniao processada:</b> ${meetingTitle}\n\n${saveResult.text}`;
-      await this.telegram.send(
-        telegramMsg.length > 4000 ? telegramMsg.slice(0, 3900) + '\n<i>(truncado)</i>' : telegramMsg,
-        { parseMode: 'HTML' },
-      );
+      const body = `Reuniao processada: ${meetingTitle}\n\n${saveResult.text}`;
+      await this.notificationManager.broadcast({
+        title: `Reuniao: ${meetingTitle}`,
+        body: body.length > 4000 ? body.slice(0, 3900) + '\n(truncado)' : body,
+        priority: 'normal',
+        source: 'transcript',
+      });
     } catch (err) {
-      console.error('[transcript] Failed to send Telegram notification:', err);
+      console.error('[transcript] Failed to send notification:', err);
     }
 
     console.log(`[transcript] Finished processing ${filePath}`);

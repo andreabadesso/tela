@@ -1,7 +1,7 @@
 import { vi } from 'vitest';
-import type { TelegramService } from '../services/telegram.js';
 import type { DatabaseService } from '../core/database.js';
 import type { JobDefinition } from '../types/index.js';
+import type { ChannelGateway } from '../channels/gateway.js';
 
 // Mock node-cron so start()/stop() don't set up real timers
 vi.mock('node-cron', () => ({
@@ -12,14 +12,16 @@ vi.mock('node-cron', () => ({
 
 import { JobRegistry } from '../jobs/registry.js';
 
-const mockTelegram = {
-  send: vi.fn().mockResolvedValue(1),
-} as unknown as TelegramService;
+const mockChannelGateway = {
+  notify: vi.fn().mockResolvedValue(undefined),
+  notifyTarget: vi.fn().mockResolvedValue(undefined),
+} as unknown as ChannelGateway;
 
 const mockDb = {
   startJobRun: vi.fn().mockReturnValue(1),
   finishJobRun: vi.fn(),
   getConsecutiveFailures: vi.fn().mockReturnValue(0),
+  getCommunicationChannels: vi.fn().mockReturnValue([{ id: 'ch-1', enabled: true }]),
 } as unknown as DatabaseService;
 
 function makeJob(overrides: Partial<JobDefinition> = {}): JobDefinition {
@@ -38,7 +40,8 @@ describe('JobRegistry', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    registry = new JobRegistry(mockTelegram, mockDb);
+    registry = new JobRegistry(mockDb);
+    registry.setChannelGateway(mockChannelGateway);
   });
 
   it('registers and lists jobs', () => {
@@ -53,7 +56,7 @@ describe('JobRegistry', () => {
     expect(listed.map((j) => j.name)).toEqual(['job-a', 'job-b']);
   });
 
-  it('runNow() executes handler and sends output to telegram', async () => {
+  it('runNow() executes handler and sends output via channel gateway', async () => {
     const job = makeJob();
     registry.register(job);
 
@@ -61,9 +64,10 @@ describe('JobRegistry', () => {
 
     expect(job.handler).toHaveBeenCalledOnce();
     expect(output).toBe('Job output');
-    expect(mockTelegram.send).toHaveBeenCalledWith('Job output', {
-      parseMode: 'HTML',
-    });
+    expect(mockChannelGateway.notify).toHaveBeenCalledWith(
+      ['ch-1'],
+      { body: 'Job output' },
+    );
   });
 
   it('runNow() logs success to database', async () => {
@@ -90,9 +94,9 @@ describe('JobRegistry', () => {
       undefined,
       'boom',
     );
-    expect(mockTelegram.send).toHaveBeenCalledWith(
-      expect.stringContaining('boom'),
-      { parseMode: 'HTML' },
+    expect(mockChannelGateway.notify).toHaveBeenCalledWith(
+      ['ch-1'],
+      expect.objectContaining({ body: expect.stringContaining('boom') }),
     );
   });
 
@@ -111,9 +115,9 @@ describe('JobRegistry', () => {
     expect(listed[0].enabled).toBe(false);
 
     // Should have sent the disable notification
-    expect(mockTelegram.send).toHaveBeenCalledWith(
-      expect.stringContaining('disabled'),
-      { parseMode: 'HTML' },
+    expect(mockChannelGateway.notify).toHaveBeenCalledWith(
+      ['ch-1'],
+      expect.objectContaining({ body: expect.stringContaining('disabled') }),
     );
   });
 

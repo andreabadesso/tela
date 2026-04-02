@@ -1,5 +1,4 @@
 import cron from 'node-cron';
-import type { TelegramService } from '../services/telegram.js';
 import type { ChannelGateway } from '../channels/gateway.js';
 import type { DatabaseService } from '../core/database.js';
 import type { JobDefinition } from '../types/index.js';
@@ -21,10 +20,7 @@ export class JobRegistry {
   /** Callback invoked when a one-shot job completes. */
   onOneShotComplete: ((jobName: string) => void) | null = null;
 
-  constructor(
-    private telegram: TelegramService | null,
-    private db: DatabaseService,
-  ) {}
+  constructor(private db: DatabaseService) {}
 
   /** Set the channel gateway for multi-channel job notifications. */
   setChannelGateway(gateway: ChannelGateway): void {
@@ -260,9 +256,8 @@ export class JobRegistry {
       }
     }
 
-    // Fallback to legacy Telegram
-    if (this.telegram) {
-      await this.telegram.send(output, { parseMode: 'HTML' });
+    if (!this.channelGateway) {
+      console.warn(`[jobs] No channel gateway configured — output from ${jobName} was not delivered.`);
     }
   }
 }

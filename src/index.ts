@@ -2,14 +2,11 @@ import 'dotenv/config';
 import { config } from './config/env.js';
 import { DatabaseService } from './core/database.js';
 import { GitSync } from './core/git.js';
-import { TelegramService } from './services/telegram.js';
 import { ChannelGateway } from './channels/gateway.js';
 import { createVaultTools } from './tools/vault.js';
 import { AgentService } from './agent/service.js';
 import { JobRegistry } from './jobs/registry.js';
-import { registerCommands } from './handlers/index.js';
 import { startApiServer } from './api/server.js';
-import { ResponseCollector } from './services/response-collector.js';
 import { createRuntimeRegistry } from './runtime/index.js';
 
 // Optional Phase 2-4 services
@@ -34,21 +31,12 @@ import { ObsidianAdapter } from './knowledge/adapters/obsidian.js';
 import type { ObsidianAdapterConfig } from './knowledge/adapters/obsidian.js';
 
 async function main() {
-  console.log(`[${new Date().toISOString()}] Starting CTO Agent...`);
+  console.log(`[${new Date().toISOString()}] Starting Tela...`);
 
   // Core services
   const db = new DatabaseService();
   const gitSync = new GitSync(config.vaultPath, !!config.gitRemoteUrl);
   const vaultTools = createVaultTools(config.vaultPath);
-
-  // Telegram is optional (web-only mode if not configured)
-  let telegram: TelegramService | null = null;
-  if (config.telegramBotToken && config.telegramChatId) {
-    telegram = new TelegramService(config.telegramBotToken, config.telegramChatId);
-  } else {
-    console.log('[init] Telegram not configured — running in web-only mode.');
-  }
-
   const encryption = new EncryptionService();
   const mcpGateway = new McpGateway(db, encryption);
 
@@ -103,7 +91,12 @@ async function main() {
   const agentService = new AgentService(db, vaultTools, gitSync, mcpGateway, knowledgeManager);
   console.log('[init] MCP Governance Gateway ready.');
 
-  // Resolve the default agent ID (first enabled agent) for legacy paths
+  // Notification manager (pluggable channels) — loaded before transcript/knowledge
+  const notificationManager = new NotificationManager(db);
+  await notificationManager.loadFromDb();
+  console.log(`[init] Notification manager loaded (${notificationManager.size} channels).`);
+
+  // Resolve the default agent ID (first enabled agent)
   const defaultAgentId = db.getAgents().find((a) => a.enabled)?.id ?? '';
 
   // Phase 2: Google services (optional)
@@ -125,13 +118,13 @@ async function main() {
   // Phase 2: Transcript processor
   let transcriptProcessor: TranscriptProcessor | null = null;
   if (config.transcriptDir) {
-    transcriptProcessor = new TranscriptProcessor(config.transcriptDir, agentService, defaultAgentId, vaultTools, gitSync, telegram!, calendar);
+    transcriptProcessor = new TranscriptProcessor(config.transcriptDir, agentService, defaultAgentId, vaultTools, gitSync, notificationManager, calendar);
     transcriptProcessor.start();
     console.log(`[init] Transcript watcher started: ${config.transcriptDir}`);
   }
 
   // Phase 2: Knowledge ingestion
-  const knowledge = new KnowledgeIngestionService(agentService, defaultAgentId, vaultTools, gitSync, telegram!);
+  const knowledge = new KnowledgeIngestionService(agentService, defaultAgentId, vaultTools, gitSync, notificationManager);
 
   // Phase 3: ShipLens (optional)
   let shiplens: ShipLensService | null = null;
@@ -184,11 +177,6 @@ async function main() {
   const patterns = new PatternLearningService(db);
   const notificationFilter = new NotificationFilterService(db);
 
-  // Notification manager (pluggable channels)
-  const notificationManager = new NotificationManager(db);
-  await notificationManager.loadFromDb();
-  console.log(`[init] Notification manager loaded (${notificationManager.size} channels).`);
-
   // Agent runtime registry
   const runtimeRegistry = createRuntimeRegistry(agentService, db, {
     image: config.agentDockerImage,
@@ -199,90 +187,19 @@ async function main() {
   const orchestrator = new Orchestrator(db, agentService, runtimeRegistry);
   console.log('[init] Orchestrator ready.');
 
-  // Communication channel gateway
+  // Communication channel gateway — single entry point for all inbound/outbound
   const channelGateway = new ChannelGateway(db, orchestrator);
-
-  // Auto-create a Telegram communication channel from env vars (backward compat)
-  // Disabled — channels should be created via the UI/API instead.
-  // if (config.telegramBotToken && config.telegramChatId) {
-  //   const existing = db.getCommunicationChannelsByPlatform('telegram');
-  //   const envChannelExists = existing.some((ch) => {
-  //     try {
-  //       const cfg = JSON.parse(ch.config);
-  //       return cfg.bot_token === config.telegramBotToken && cfg.chat_id === config.telegramChatId;
-  //     } catch { return false; }
-  //   });
-  //   if (!envChannelExists) {
-  //     db.createCommunicationChannel({
-  //       id: 'telegram-env',
-  //       name: 'Telegram (env)',
-  //       platform: 'telegram',
-  //       direction: 'bidirectional',
-  //       agent_id: null,
-  //       config: JSON.stringify({ bot_token: config.telegramBotToken, chat_id: config.telegramChatId }),
-  //       enabled: 1,
-  //     });
-  //     console.log('[init] Auto-created Telegram channel from env vars.');
-  //   }
-  // }
-
-  // Wire optional services into gateway
   channelGateway.setKnowledgeIngestion(knowledge);
-
-  // Start all enabled communication channels
   await channelGateway.startAll();
   console.log(`[init] Channel gateway started (${channelGateway.size} channels).`);
-
-  // Register commands + message handler (only if Telegram is configured)
-  const jobRegistry = new JobRegistry(telegram, db);
-  jobRegistry.setChannelGateway(channelGateway);
-  const eodCollector = new ResponseCollector();
-
-  // Legacy Telegram bot: only start if ChannelGateway is NOT already handling Telegram.
-  // The gateway auto-creates a channel from env vars, so this block is skipped when
-  // the gateway is running (avoids duplicate getUpdates conflict).
-  const gatewayHandlesTelegram = channelGateway.size > 0 &&
-    db.getCommunicationChannelsByPlatform('telegram').some((ch) => ch.enabled);
-
-  if (telegram && !gatewayHandlesTelegram) {
-    registerCommands({ telegram, agentService, defaultAgentId, vault: vaultTools, gitSync, shiplens, jira, github });
-
-    telegram.onMessage(async (text, messageId) => {
-      if (eodCollector.isCollecting) {
-        eodCollector.addMessage(text);
-        return;
-      }
-
-      if (text.match(/^https?:\/\//)) {
-        try {
-          const result = await knowledge.ingest(text, messageId);
-          await telegram.send(
-            `📥 ${result.summary}\n\n📁 ${result.savedTo || 'Não salvo'}`,
-            { replyTo: messageId },
-          );
-          return;
-        } catch (err) {
-          console.error('[ingest] Failed:', err);
-        }
-      }
-
-      const response = await agentService.process(defaultAgentId, { text, source: 'telegram' });
-      const replyText = markdownToTelegramHtml(response.text.trim()) || '🤔 Não consegui gerar uma resposta. Tenta de novo?';
-      await telegram.send(replyText, { parseMode: 'HTML', replyTo: messageId });
-      patterns.logInteraction({ topic: text.slice(0, 50), queryType: 'question' });
-    });
-
-    telegram.start();
-    console.log('[init] Legacy Telegram bot started.');
-  } else if (telegram && gatewayHandlesTelegram) {
-    console.log('[init] Legacy Telegram bot skipped — ChannelGateway handles Telegram.');
-  }
 
   // Phase 6: Authentication — using built-in email/password (better-auth disabled due to module conflict)
   const auth = undefined;
   console.log('[init] Auth: email/password via built-in routes.');
 
-  // Wire schedule tools into agents & load persisted schedules
+  // Job registry — wire schedule tools into agents & load persisted schedules
+  const jobRegistry = new JobRegistry(db);
+  jobRegistry.setChannelGateway(channelGateway);
   agentService.setScheduleDeps(jobRegistry);
   jobRegistry.onOneShotComplete = (jobName: string) => {
     const scheduleId = jobName.replace('schedule:', '');
@@ -291,18 +208,17 @@ async function main() {
     console.log(`[jobs] One-shot schedule ${scheduleId} completed.`);
   };
   await jobRegistry.loadSchedulesFromDb(db, agentService);
-
   jobRegistry.start();
+
   const apiServer = startApiServer({ agentService, orchestrator, db, gitSync, jobRegistry, knowledgeManager, notificationManager, auth, mcpGateway, runtimeRegistry, channelGateway });
 
-  console.log(`[${new Date().toISOString()}] CTO Agent running. All phases loaded.`);
+  console.log(`[${new Date().toISOString()}] Tela running. All phases loaded.`);
 
   // Graceful shutdown
   const shutdown = async () => {
     console.log('\nShutting down...');
     jobRegistry.stop();
     await channelGateway.stopAll();
-    telegram?.stop();
     transcriptProcessor?.stop();
     await shiplens?.disconnect();
     await mcpGateway?.disconnectAll();
@@ -314,23 +230,9 @@ async function main() {
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
-}
 
-/** Convert leftover markdown to Telegram-safe HTML */
-function markdownToTelegramHtml(text: string): string {
-  return text
-    // Code blocks: ```lang\n...\n``` → <pre>...</pre>
-    .replace(/```[\w]*\n?([\s\S]*?)```/g, '<pre>$1</pre>')
-    // Inline code: `...` → <code>...</code>
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    // Bold: **...** or __...__ → <b>...</b>
-    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
-    .replace(/__(.+?)__/g, '<b>$1</b>')
-    // Italic: *...* or _..._ → <i>...</i>
-    .replace(/(?<!\w)\*([^*]+?)\*(?!\w)/g, '<i>$1</i>')
-    .replace(/(?<!\w)_([^_]+?)_(?!\w)/g, '<i>$1</i>')
-    // Links: [text](url) → <a href="url">text</a>
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  // Suppress unused variable warnings for optionally-wired services
+  void gmail; void github; void jira; void vectorStore; void notificationFilter; void patterns; void googleAuth;
 }
 
 main().catch((err) => {
