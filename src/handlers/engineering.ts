@@ -1,14 +1,15 @@
 import type { TelegramService } from '../services/telegram.js';
-import type { CtoAgent } from '../agent.js';
+import type { AgentService } from '../agent/service.js';
 import type { createVaultTools } from '../tools/vault.js';
-import type { GitSync } from '../services/git.js';
-import type { ShipLensService } from '../services/shiplens.js';
-import type { JiraService } from '../services/jira.js';
-import type { GitHubService } from '../services/github.js';
+import type { GitSync } from '../core/git.js';
+import type { ShipLensService } from '../integrations/shiplens.js';
+import type { JiraService } from '../integrations/jira.js';
+import type { GitHubService } from '../integrations/github.js';
 
 export function registerEngineeringCommands(
   telegram: TelegramService,
-  agent: CtoAgent,
+  agentService: AgentService,
+  defaultAgentId: string,
   vault: ReturnType<typeof createVaultTools>,
   gitSync: GitSync,
   shiplens: ShipLensService | null,
@@ -35,12 +36,13 @@ export function registerEngineeringCommands(
     }
 
     // Process with Claude for formatting
-    const result = await agent.process({
+    const result = await agentService.process(defaultAgentId, {
       text: sections.join('\n\n'),
       source: 'telegram',
-    }, `Format these engineering metrics for Telegram.
+      instructions: `Format these engineering metrics for Telegram.
 Show DORA metrics with trend arrows (↑ ↓ →).
-Compare vs baseline if available. Portuguese. HTML format.`);
+Compare vs baseline if available. Portuguese. HTML format.`,
+    });
 
     await telegram.send(result.text, { replyTo: messageId, parseMode: 'HTML' });
   });
@@ -94,10 +96,10 @@ Compare vs baseline if available. Portuguese. HTML format.`);
       return;
     }
 
-    const result = await agent.process({
+    const result = await agentService.process(defaultAgentId, {
       text: `Decision topic: ${topic}`,
       source: 'telegram',
-    }, `The user wants to make a structured decision about: "${topic}"
+      instructions: `The user wants to make a structured decision about: "${topic}"
 
 Ask clarifying questions to understand:
 1. What are the options?
@@ -105,7 +107,8 @@ Ask clarifying questions to understand:
 3. What's the timeline?
 
 Then generate a decision record with: options, tradeoffs, recommendation.
-Portuguese.`);
+Portuguese.`,
+    });
 
     await telegram.send(result.text, { replyTo: messageId });
   });

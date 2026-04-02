@@ -1,14 +1,12 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import type { CtoAgent } from '../../agent.js';
-import type { DatabaseService } from '../../services/database.js';
-import type { AgentService } from '../../services/agent-service.js';
+import type { DatabaseService } from '../../core/database.js';
+import type { AgentService } from '../../agent/service.js';
 import type { Orchestrator } from '../../orchestrator/index.js';
 import type { AuthUser } from '../middleware.js';
 
 export function chatRoutes(deps: {
-  agent: CtoAgent;
-  agentService?: AgentService;
+  agentService: AgentService;
   orchestrator?: Orchestrator;
   db: DatabaseService;
 }) {
@@ -40,16 +38,13 @@ export function chatRoutes(deps: {
             userId,
             metadata: body.agentId ? { agentId: body.agentId } : undefined,
           });
-        } else if (body.agentId && deps.agentService) {
-          response = await deps.agentService.process(body.agentId, {
+        } else {
+          const agents = deps.db.getAgents();
+          const agentId = body.agentId ?? agents.find((a) => a.enabled)?.id ?? '';
+          response = await deps.agentService.process(agentId, {
             text: body.text,
             source: 'web',
             userId,
-          });
-        } else {
-          response = await deps.agent.process({
-            text: body.text,
-            source: 'web',
           });
         }
 

@@ -1,6 +1,6 @@
 import { vi } from 'vitest';
 import type { TelegramService } from '../services/telegram.js';
-import type { DatabaseService } from '../services/database.js';
+import type { DatabaseService } from '../core/database.js';
 import type { JobDefinition } from '../types/index.js';
 
 // Mock node-cron so start()/stop() don't set up real timers

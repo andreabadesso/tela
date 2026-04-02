@@ -1,15 +1,15 @@
 import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { createVaultTools } from '../tools/vault.js';
-import type { GitSync } from './git.js';
-import type { DatabaseService } from './database.js';
+import type { GitSync } from '../core/git.js';
+import type { DatabaseService } from '../core/database.js';
 import type { McpGateway } from './mcp-gateway.js';
 import type { KnowledgeManager } from '../knowledge/manager.js';
 import type { AgentInput, AgentOutput } from '../types/index.js';
 import { config } from '../config/env.js';
-import { buildMemoryContext, buildMemoryMcpServer } from './memory-service.js';
+import { buildMemoryContext, buildMemoryMcpServer } from './memory.js';
 import { buildScheduleMcpServer, type ScheduleToolsContext } from '../tools/schedule-tools.js';
-import { ConversationContextService } from './context-manager.js';
+import { ConversationContextService } from './context.js';
 import type { ToolSandbox } from '../types/runtime.js';
 import type { JobRegistry } from '../jobs/registry.js';
 
@@ -319,6 +319,7 @@ export class AgentService {
 
     const systemPrompt = [
       systemPromptBase,
+      input.instructions || '',
       memoryContext,
       '',
       historyContext,

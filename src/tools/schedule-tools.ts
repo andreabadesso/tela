@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import cron from 'node-cron';
-import type { DatabaseService } from '../services/database.js';
+import type { DatabaseService } from '../core/database.js';
 import type { JobRegistry } from '../jobs/registry.js';
-import type { AgentService } from '../services/agent-service.js';
+import type { AgentService } from '../agent/service.js';
 
 export interface ScheduleToolsContext {
   /** Channel ID the request originated from (e.g., Telegram channel). */

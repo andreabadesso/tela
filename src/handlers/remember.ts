@@ -1,6 +1,6 @@
 import type { TelegramService } from '../services/telegram.js';
 import type { createVaultTools } from '../tools/vault.js';
-import type { GitSync } from '../services/git.js';
+import type { GitSync } from '../core/git.js';
 
 export async function handleRemember(
   text: string,

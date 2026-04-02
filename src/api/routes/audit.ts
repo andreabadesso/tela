@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import type { DatabaseService } from '../../services/database.js';
+import type { DatabaseService } from '../../core/database.js';
 
 export function auditRoutes(deps: { db: DatabaseService }) {
   const app = new Hono();

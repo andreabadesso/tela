@@ -1,9 +1,9 @@
 import cron from 'node-cron';
 import type { TelegramService } from '../services/telegram.js';
 import type { ChannelGateway } from '../channels/gateway.js';
-import type { DatabaseService } from '../services/database.js';
+import type { DatabaseService } from '../core/database.js';
 import type { JobDefinition } from '../types/index.js';
-import type { AgentService } from '../services/agent-service.js';
+import type { AgentService } from '../agent/service.js';
 
 interface ManagedJob {
   definition: JobDefinition;
@@ -22,7 +22,7 @@ export class JobRegistry {
   onOneShotComplete: ((jobName: string) => void) | null = null;
 
   constructor(
-    private telegram: TelegramService,
+    private telegram: TelegramService | null,
     private db: DatabaseService,
   ) {}
 

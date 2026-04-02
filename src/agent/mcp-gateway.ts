@@ -2,8 +2,8 @@ import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { z } from 'zod';
-import type { DatabaseService } from './database.js';
-import type { EncryptionService } from './encryption.js';
+import type { DatabaseService } from '../core/database.js';
+import type { EncryptionService } from '../core/encryption.js';
 import type { McpPolicyRow, ConnectionRow } from '../types/index.js';
 import { config } from '../config/env.js';
 

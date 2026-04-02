@@ -91,17 +91,13 @@ export function setupWebSocket(server: Server, deps: ApiDeps) {
             userId,
             metadata,
           });
-        } else if (parsed.agentId && deps.agentService) {
-          // Fallback: direct agent service call
-          response = await deps.agentService.process(parsed.agentId, {
+        } else {
+          const agents = deps.db.getAgents();
+          const agentId = parsed.agentId ?? agents.find((a) => a.enabled)?.id ?? '';
+          response = await deps.agentService.process(agentId, {
             text: parsed.text,
             source: 'web',
             userId,
-          });
-        } else {
-          response = await deps.agent.process({
-            text: parsed.text,
-            source: 'web',
           });
         }
 

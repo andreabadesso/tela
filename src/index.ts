@@ -1,12 +1,11 @@
 import 'dotenv/config';
 import { config } from './config/env.js';
-import { DatabaseService } from './services/database.js';
-import { GitSync } from './services/git.js';
+import { DatabaseService } from './core/database.js';
+import { GitSync } from './core/git.js';
 import { TelegramService } from './services/telegram.js';
 import { ChannelGateway } from './channels/gateway.js';
 import { createVaultTools } from './tools/vault.js';
-import { CtoAgent } from './agent.js';
-import { AgentService } from './services/agent-service.js';
+import { AgentService } from './agent/service.js';
 import { JobRegistry } from './jobs/registry.js';
 import { registerCommands } from './handlers/index.js';
 import { startApiServer } from './api/server.js';
@@ -14,22 +13,22 @@ import { ResponseCollector } from './services/response-collector.js';
 import { createRuntimeRegistry } from './runtime/index.js';
 
 // Optional Phase 2-4 services
-import { GoogleAuthService } from './services/google-auth.js';
-import { CalendarService } from './services/calendar.js';
-import { GmailService } from './services/gmail.js';
-import { ShipLensService } from './services/shiplens.js';
-import { JiraService } from './services/jira.js';
-import { GitHubService } from './services/github.js';
+import { GoogleAuthService } from './integrations/google-auth.js';
+import { CalendarService } from './integrations/calendar.js';
+import { GmailService } from './integrations/gmail.js';
+import { ShipLensService } from './integrations/shiplens.js';
+import { JiraService } from './integrations/jira.js';
+import { GitHubService } from './integrations/github.js';
 import { TranscriptProcessor } from './services/transcript.js';
 import { KnowledgeIngestionService } from './services/knowledge.js';
-import { VectorStoreService } from './services/vector-store.js';
+import { VectorStoreService } from './agent/vector-store.js';
 import { PatternLearningService } from './services/pattern-learning.js';
 import { NotificationFilterService } from './services/notification-filter.js';
 import { NotificationManager } from './notifications/manager.js';
 import { Orchestrator } from './orchestrator/index.js';
 // import { createAuth } from './auth/index.js';
-import { EncryptionService } from './services/encryption.js';
-import { McpGateway } from './services/mcp-gateway.js';
+import { EncryptionService } from './core/encryption.js';
+import { McpGateway } from './agent/mcp-gateway.js';
 import { KnowledgeManager } from './knowledge/manager.js';
 import { ObsidianAdapter } from './knowledge/adapters/obsidian.js';
 import type { ObsidianAdapterConfig } from './knowledge/adapters/obsidian.js';
@@ -50,7 +49,6 @@ async function main() {
     console.log('[init] Telegram not configured — running in web-only mode.');
   }
 
-  const agent = new CtoAgent(vaultTools, telegram!, gitSync, db);
   const encryption = new EncryptionService();
   const mcpGateway = new McpGateway(db, encryption);
 
@@ -105,6 +103,9 @@ async function main() {
   const agentService = new AgentService(db, vaultTools, gitSync, mcpGateway, knowledgeManager);
   console.log('[init] MCP Governance Gateway ready.');
 
+  // Resolve the default agent ID (first enabled agent) for legacy paths
+  const defaultAgentId = db.getAgents().find((a) => a.enabled)?.id ?? '';
+
   // Phase 2: Google services (optional)
   let googleAuth: GoogleAuthService | null = null;
   let calendar: CalendarService | null = null;
@@ -124,13 +125,13 @@ async function main() {
   // Phase 2: Transcript processor
   let transcriptProcessor: TranscriptProcessor | null = null;
   if (config.transcriptDir) {
-    transcriptProcessor = new TranscriptProcessor(config.transcriptDir, agent, vaultTools, gitSync, telegram!, calendar);
+    transcriptProcessor = new TranscriptProcessor(config.transcriptDir, agentService, defaultAgentId, vaultTools, gitSync, telegram!, calendar);
     transcriptProcessor.start();
     console.log(`[init] Transcript watcher started: ${config.transcriptDir}`);
   }
 
   // Phase 2: Knowledge ingestion
-  const knowledge = new KnowledgeIngestionService(agent, vaultTools, gitSync, telegram!);
+  const knowledge = new KnowledgeIngestionService(agentService, defaultAgentId, vaultTools, gitSync, telegram!);
 
   // Phase 3: ShipLens (optional)
   let shiplens: ShipLensService | null = null;
@@ -233,7 +234,7 @@ async function main() {
   console.log(`[init] Channel gateway started (${channelGateway.size} channels).`);
 
   // Register commands + message handler (only if Telegram is configured)
-  const jobRegistry = new JobRegistry(telegram!, db);
+  const jobRegistry = new JobRegistry(telegram, db);
   jobRegistry.setChannelGateway(channelGateway);
   const eodCollector = new ResponseCollector();
 
@@ -244,7 +245,7 @@ async function main() {
     db.getCommunicationChannelsByPlatform('telegram').some((ch) => ch.enabled);
 
   if (telegram && !gatewayHandlesTelegram) {
-    registerCommands({ telegram, agent, vault: vaultTools, gitSync, shiplens, jira, github });
+    registerCommands({ telegram, agentService, defaultAgentId, vault: vaultTools, gitSync, shiplens, jira, github });
 
     telegram.onMessage(async (text, messageId) => {
       if (eodCollector.isCollecting) {
@@ -265,7 +266,7 @@ async function main() {
         }
       }
 
-      const response = await agent.process({ text, source: 'telegram' });
+      const response = await agentService.process(defaultAgentId, { text, source: 'telegram' });
       const replyText = markdownToTelegramHtml(response.text.trim()) || '🤔 Não consegui gerar uma resposta. Tenta de novo?';
       await telegram.send(replyText, { parseMode: 'HTML', replyTo: messageId });
       patterns.logInteraction({ topic: text.slice(0, 50), queryType: 'question' });
@@ -292,7 +293,7 @@ async function main() {
   await jobRegistry.loadSchedulesFromDb(db, agentService);
 
   jobRegistry.start();
-  const apiServer = startApiServer({ agent, agentService, orchestrator, db, gitSync, jobRegistry, knowledgeManager, notificationManager, auth, mcpGateway, runtimeRegistry, channelGateway });
+  const apiServer = startApiServer({ agentService, orchestrator, db, gitSync, jobRegistry, knowledgeManager, notificationManager, auth, mcpGateway, runtimeRegistry, channelGateway });
 
   console.log(`[${new Date().toISOString()}] CTO Agent running. All phases loaded.`);
 

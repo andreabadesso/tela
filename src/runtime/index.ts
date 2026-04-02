@@ -1,6 +1,6 @@
 import type { AgentRuntime, RuntimeType, DockerRuntimeConfig } from '../types/runtime.js';
-import type { AgentService } from '../services/agent-service.js';
-import type { DatabaseService } from '../services/database.js';
+import type { AgentService } from '../agent/service.js';
+import type { DatabaseService } from '../core/database.js';
 import type { AgentRow } from '../types/index.js';
 import { InProcessRuntime } from './in-process.js';
 import { DockerRuntime } from './docker.js';

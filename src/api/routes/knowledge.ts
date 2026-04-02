@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
-import type { DatabaseService } from '../../services/database.js';
+import type { DatabaseService } from '../../core/database.js';
 import type { KnowledgeManager } from '../../knowledge/manager.js';
 import { ObsidianAdapter, scanVaultPath } from '../../knowledge/adapters/obsidian.js';
-import { VectorStoreService } from '../../services/vector-store.js';
+import { VectorStoreService } from '../../agent/vector-store.js';
 import { config } from '../../config/env.js';
 
 export interface KnowledgeDeps {

@@ -1,5 +1,5 @@
-import type { AgentService } from '../services/agent-service.js';
-import type { DatabaseService } from '../services/database.js';
+import type { AgentService } from '../agent/service.js';
+import type { DatabaseService } from '../core/database.js';
 import type {
   AgentRuntime,
   AgentExecutionParams,

@@ -1,11 +1,11 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
-import type { CtoAgent } from '../agent.js';
+import type { AgentService } from '../agent/service.js';
 import type { createVaultTools } from '../tools/vault.js';
-import type { GitSync } from './git.js';
+import type { GitSync } from '../core/git.js';
 import type { TelegramService } from './telegram.js';
-import type { CalendarService, CalendarEvent } from './calendar.js';
+import type { CalendarService, CalendarEvent } from '../integrations/calendar.js';
 
 const DEBOUNCE_MS = 5_000;
 const WATCHED_EXTENSIONS = ['.txt', '.md', '.srt', '.vtt'];
@@ -77,7 +77,8 @@ export class TranscriptProcessor {
 
   constructor(
     private watchDir: string,
-    private agent: CtoAgent,
+    private agentService: AgentService,
+    private defaultAgentId: string,
     private vault: VaultTools,
     private gitSync: GitSync,
     private telegram: TelegramService,
@@ -213,9 +214,9 @@ Also, at the very end, in a section called "## Meta", include:
 - ACTION_ITEMS_COUNT: <number>
 - A one-line summary (max 100 chars) for Telegram notification.`;
 
-    const result = await this.agent.process(
-      { text: content, source: 'event' },
-      systemPromptAddition,
+    const result = await this.agentService.process(
+      this.defaultAgentId,
+      { text: content, source: 'event', instructions: systemPromptAddition },
     );
 
     const noteContent = result.text;
@@ -224,9 +225,9 @@ Also, at the very end, in a section called "## Meta", include:
     // Let the agent save the meeting note and do any post-processing
     // using vault tools. The agent decides where to write based on the
     // vault's existing structure — no hardcoded paths.
-    const saveResult = await this.agent.process(
-      { text: noteContent, source: 'event' },
-      `You just processed a meeting transcript. The structured note is above.
+    const saveResult = await this.agentService.process(
+      this.defaultAgentId,
+      { text: noteContent, source: 'event', instructions: `You just processed a meeting transcript. The structured note is above.
 
 Save it to the vault using vault tools:
 1. Write the full note as a new file. Pick an appropriate path based on existing vault structure (search for other meeting notes to match the convention). Use the date ${dateStr} and title "${meetingTitle}" in the filename.
@@ -236,7 +237,7 @@ Save it to the vault using vault tools:
 
 Use search_vault and list_notes to discover the vault's folder structure before writing. Do not assume any specific paths exist.
 
-After saving, respond with a short summary of what you saved and where. Portuguese.`,
+After saving, respond with a short summary of what you saved and where. Portuguese.` },
     );
 
     // Git commit + push

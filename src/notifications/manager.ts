@@ -1,4 +1,4 @@
-import type { DatabaseService } from '../services/database.js';
+import type { DatabaseService } from '../core/database.js';
 import type { NotificationChannelRow } from '../types/index.js';
 import type { NotificationChannel, NotificationMessage } from './types.js';
 import { TelegramChannel } from './channels/telegram.js';

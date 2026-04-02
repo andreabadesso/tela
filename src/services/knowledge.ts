@@ -3,9 +3,9 @@ import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { extname } from 'node:path';
 import { PDFParse } from 'pdf-parse';
-import type { CtoAgent } from '../agent.js';
+import type { AgentService } from '../agent/service.js';
 import type { createVaultTools } from '../tools/vault.js';
-import type { GitSync } from './git.js';
+import type { GitSync } from '../core/git.js';
 import type { TelegramService } from './telegram.js';
 
 const execFileAsync = promisify(execFileCb);
@@ -60,7 +60,8 @@ function stripHtml(html: string): string {
 
 export class KnowledgeIngestionService {
   constructor(
-    private agent: CtoAgent,
+    private agentService: AgentService,
+    private defaultAgentId: string,
     private vault: VaultTools,
     private gitSync: GitSync,
     private telegram: TelegramService,
@@ -353,9 +354,9 @@ To find related notes, use the search_vault tool to look for keywords from the c
 
 IMPORTANT: Your final response MUST be valid JSON and nothing else.`;
 
-    const result = await this.agent.process(
-      { text: content.slice(0, 10_000), source: 'event' },
-      systemPromptAddition,
+    const result = await this.agentService.process(
+      this.defaultAgentId,
+      { text: content.slice(0, 10_000), source: 'event', instructions: systemPromptAddition },
     );
 
     try {

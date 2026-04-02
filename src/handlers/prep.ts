@@ -1,13 +1,14 @@
 import type { TelegramService } from '../services/telegram.js';
 import type { createVaultTools } from '../tools/vault.js';
-import type { CtoAgent } from '../agent.js';
+import type { AgentService } from '../agent/service.js';
 
 export async function handlePrep(
   text: string,
   messageId: number,
   telegram: TelegramService,
   vault: ReturnType<typeof createVaultTools>,
-  agent: CtoAgent,
+  agentService: AgentService,
+  defaultAgentId: string,
 ): Promise<void> {
   const name = text.trim();
 
@@ -39,12 +40,13 @@ export async function handlePrep(
   }
 
   // Generate prep sheet with Claude
-  const result = await agent.process({
+  const result = await agentService.process(defaultAgentId, {
     text: `Context found about "${name}":\n\n${personContent}`,
     source: 'telegram',
-  }, `Generate a prep sheet for a conversation with ${name} based on the context found in the vault.
+    instructions: `Generate a prep sheet for a conversation with ${name} based on the context found in the vault.
 Include: recent topics, open items, suggested questions, any flags.
-Keep it concise. Portuguese.`);
+Keep it concise. Portuguese.`,
+  });
 
   const msg = `📋 <b>Prep — ${name}</b>\n\n${result.text}`;
   if (msg.length > 4000) {

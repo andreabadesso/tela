@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
-import type { DatabaseService } from '../../services/database.js';
-import type { McpGateway } from '../../services/mcp-gateway.js';
+import type { DatabaseService } from '../../core/database.js';
+import type { McpGateway } from '../../agent/mcp-gateway.js';
 import type { DockerRuntime } from '../../runtime/docker.js';
 
 interface McpProxyDeps {

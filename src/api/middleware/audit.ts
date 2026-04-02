@@ -1,4 +1,4 @@
-import type { DatabaseService } from '../../services/database.js';
+import type { DatabaseService } from '../../core/database.js';
 
 /**
  * Audit logging middleware structure.

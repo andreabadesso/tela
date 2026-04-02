@@ -3,6 +3,8 @@ export interface AgentInput {
   source: string;
   userId?: string;
   metadata?: Record<string, unknown>;
+  /** Extra instructions appended to the system prompt for this request only. */
+  instructions?: string;
 }
 
 export interface AgentOutput {

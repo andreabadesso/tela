@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 import type { OAuth2Client } from 'google-auth-library';
-import type { DatabaseService } from './database.js';
+import type { DatabaseService } from '../core/database.js';
 
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar.readonly',

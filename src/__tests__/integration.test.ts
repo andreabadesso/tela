@@ -9,6 +9,7 @@ vi.mock('../config/env.js', () => ({
     gitRemoteUrl: 'git@github.com:test/vault.git',
     timezone: 'America/Sao_Paulo',
     nodeEnv: 'test',
+    agentMemoryEnabled: false,
   },
 }));
 
@@ -35,21 +36,6 @@ vi.mock('simple-git', () => ({
   default: () => mockGit,
 }));
 
-vi.mock('grammy', () => ({
-  Bot: vi.fn().mockImplementation(() => ({
-    use: vi.fn(),
-    command: vi.fn(),
-    on: vi.fn(),
-    start: vi.fn(),
-    stop: vi.fn(),
-    api: {
-      sendMessage: vi.fn().mockResolvedValue({ message_id: 1 }),
-      sendDocument: vi.fn().mockResolvedValue(undefined),
-    },
-  })),
-  InputFile: vi.fn(),
-}));
-
 // Mock claude-agent-sdk query to avoid real API calls
 vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@anthropic-ai/claude-agent-sdk')>();
@@ -66,18 +52,17 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseService } from '../services/database.js';
-import { GitSync } from '../services/git.js';
-import { TelegramService } from '../services/telegram.js';
+import { DatabaseService } from '../core/database.js';
+import { GitSync } from '../core/git.js';
 import { createVaultTools } from '../tools/vault.js';
-import { CtoAgent } from '../agent.js';
+import { AgentService } from '../agent/service.js';
 
 describe('Integration: message processing flow', () => {
   let tempDir: string;
   let db: DatabaseService;
   let gitSync: GitSync;
-  let telegram: TelegramService;
-  let agent: CtoAgent;
+  let agentService: AgentService;
+  let defaultAgentId: string;
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -88,13 +73,15 @@ describe('Integration: message processing flow', () => {
 
     db = new DatabaseService(dbPath);
     gitSync = new GitSync(tempDir);
-    telegram = new TelegramService('test:token', '123');
     const vault = createVaultTools(tempDir);
-    agent = new CtoAgent(vault, telegram, gitSync, db);
+    agentService = new AgentService(db, vault, gitSync);
+
+    // Use the default seeded agent
+    defaultAgentId = db.getAgents().find((a) => a.enabled)?.id ?? 'default';
   });
 
-  it('processes a Telegram message through the agent', async () => {
-    const response = await agent.process({
+  it('processes a message through the agent', async () => {
+    const response = await agentService.process(defaultAgentId, {
       text: 'Hello, test message',
       source: 'telegram',
     });
@@ -112,7 +99,7 @@ describe('Integration: message processing flow', () => {
   });
 
   it('logs conversation with timing data', async () => {
-    await agent.process({
+    await agentService.process(defaultAgentId, {
       text: 'Test timing',
       source: 'telegram',
     });
@@ -122,7 +109,7 @@ describe('Integration: message processing flow', () => {
   });
 
   it('handles cron source input', async () => {
-    const response = await agent.process({
+    const response = await agentService.process(defaultAgentId, {
       text: 'Morning briefing data',
       source: 'cron',
     });

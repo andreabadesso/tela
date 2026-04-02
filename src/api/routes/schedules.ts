@@ -1,12 +1,12 @@
 import { Hono } from 'hono';
-import type { DatabaseService } from '../../services/database.js';
+import type { DatabaseService } from '../../core/database.js';
 import type { JobRegistry } from '../../jobs/registry.js';
-import type { CtoAgent } from '../../agent.js';
+import type { AgentService } from '../../agent/service.js';
 
 export function scheduleRoutes(deps: {
   db: DatabaseService;
   jobRegistry: JobRegistry;
-  agent: CtoAgent;
+  agentService: AgentService;
 }) {
   const app = new Hono();
 
@@ -66,7 +66,7 @@ export function scheduleRoutes(deps: {
     }
 
     try {
-      const response = await deps.agent.process({
+      const response = await deps.agentService.process(schedule.agent_id, {
         text: schedule.prompt,
         source: 'cron',
       });

@@ -1,8 +1,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import type { DatabaseService } from './database.js';
-import type { EncryptionService } from './encryption.js';
+import type { DatabaseService } from '../core/database.js';
+import type { EncryptionService } from '../core/encryption.js';
 
 export interface ToolDefinition {
   name: string;

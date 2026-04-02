@@ -2,7 +2,7 @@ import { readFile, writeFile, mkdir, readdir, stat, access } from 'node:fs/promi
 import { resolve, relative, join, extname, dirname } from 'node:path';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
-import { VectorStoreService } from '../../services/vector-store.js';
+import { VectorStoreService } from '../../agent/vector-store.js';
 import type { KnowledgeAdapter, KnowledgeDocument, AdapterStatus, SyncResult } from '../types.js';
 
 const execFileAsync = promisify(execFileCb);

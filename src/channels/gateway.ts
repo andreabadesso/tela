@@ -1,4 +1,4 @@
-import type { DatabaseService } from '../services/database.js';
+import type { DatabaseService } from '../core/database.js';
 import type { Orchestrator } from '../orchestrator/index.js';
 import type { KnowledgeIngestionService } from '../services/knowledge.js';
 import type { CommunicationChannelRow } from '../types/index.js';

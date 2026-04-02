@@ -1,7 +1,7 @@
 import { readFile, stat, readdir, writeFile, mkdir, access } from 'node:fs/promises';
 import { resolve, relative, dirname, extname, join, normalize } from 'node:path';
 import { createVaultTools } from '../../tools/vault.js';
-import { VectorStoreService } from '../../services/vector-store.js';
+import { VectorStoreService } from '../../agent/vector-store.js';
 import { parseNote, extractTags, extractWikilinks, chunkMarkdown } from '../chunker.js';
 import type { KnowledgeAdapter, KnowledgeDocument, AdapterStatus, SyncResult } from '../types.js';
 

@@ -22,7 +22,7 @@ vi.mock('simple-git', () => ({
   default: () => mockGit,
 }));
 
-import { GitSync } from '../services/git.js';
+import { GitSync } from '../core/git.js';
 
 describe('GitSync', () => {
   let gitSync: GitSync;

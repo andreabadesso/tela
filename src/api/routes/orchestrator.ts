@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Orchestrator } from '../../orchestrator/index.js';
-import type { DatabaseService } from '../../services/database.js';
+import type { DatabaseService } from '../../core/database.js';
 
 export function orchestratorRoutes(deps: { orchestrator: Orchestrator; db: DatabaseService }) {
   const app = new Hono();

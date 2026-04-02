@@ -1,8 +1,7 @@
-import type { CtoAgent } from '../agent.js';
 import type { createVaultTools } from '../tools/vault.js';
-import type { CalendarService } from './calendar.js';
+import type { CalendarService } from '../integrations/calendar.js';
 import type { PatternLearningService } from './pattern-learning.js';
-import type { DatabaseService } from './database.js';
+import type { DatabaseService } from '../core/database.js';
 
 interface Suggestion {
   type: 'decision' | 'roadmap' | 'pattern';
@@ -14,7 +13,6 @@ interface Suggestion {
 
 export class ProactiveSuggestionsService {
   constructor(
-    private agent: CtoAgent,
     private vault: ReturnType<typeof createVaultTools>,
     private calendar: CalendarService | null,
     private patterns: PatternLearningService | null,

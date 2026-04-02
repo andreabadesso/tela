@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
-import type { DatabaseService } from '../../services/database.js';
-import type { GitSync } from '../../services/git.js';
+import type { DatabaseService } from '../../core/database.js';
+import type { GitSync } from '../../core/git.js';
 import type { JobRegistry } from '../../jobs/registry.js';
 
 const startTime = Date.now();

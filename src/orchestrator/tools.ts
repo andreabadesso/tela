@@ -1,7 +1,7 @@
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { Orchestrator } from './index.js';
-import type { DatabaseService } from '../services/database.js';
+import type { DatabaseService } from '../core/database.js';
 
 /**
  * Create MCP tools that allow agents to communicate with each other

@@ -1,5 +1,5 @@
 import type { TelegramService } from '../services/telegram.js';
-import type { GitSync } from '../services/git.js';
+import type { GitSync } from '../core/git.js';
 
 const startTime = Date.now();
 

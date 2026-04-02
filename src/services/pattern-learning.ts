@@ -1,5 +1,5 @@
-import type { DatabaseService } from './database.js';
-import type { CtoAgent } from '../agent.js';
+import type { DatabaseService } from '../core/database.js';
+import type { AgentService } from '../agent/service.js';
 
 interface InteractionLog {
   topic: string;
@@ -93,7 +93,7 @@ export class PatternLearningService {
     return weeks >= this.minWeeksData;
   }
 
-  async analyzePatterns(agent: CtoAgent): Promise<PatternInsight[]> {
+  async analyzePatterns(agentService: AgentService, defaultAgentId: string): Promise<PatternInsight[]> {
     if (!this.hasEnoughData()) return [];
 
     const logs = this.getDb().prepare(`
@@ -126,10 +126,10 @@ export class PatternLearningService {
       peakHours: Array.from(hourDistribution.entries()).sort((a, b) => b[1] - a[1]).slice(0, 5),
     };
 
-    const result = await agent.process({
+    const result = await agentService.process(defaultAgentId, {
       text: JSON.stringify(summary, null, 2),
       source: 'cron',
-    }, `Analyze the user's interaction patterns from this data.
+      instructions: `Analyze the user's interaction patterns from this data.
 Generate insights in these categories:
 1. Temporal: when does he check on specific topics?
 2. Frequency: what does he check most/least?
@@ -137,7 +137,7 @@ Generate insights in these categories:
 4. Behavioral: any notable patterns in his CTO workflow?
 
 Return as JSON array of: { type, description, confidence (0-1), relevantOn? }
-Portuguese for descriptions. Max 10 insights.`);
+Portuguese for descriptions. Max 10 insights.` });
 
     try {
       const jsonMatch = result.text.match(/\[[\s\S]*\]/);

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
-import type { DatabaseService } from '../../services/database.js';
-import { EncryptionService } from '../../services/encryption.js';
+import type { DatabaseService } from '../../core/database.js';
+import { EncryptionService } from '../../core/encryption.js';
 import type { AuthUser } from '../middleware.js';
 
 type Env = { Variables: { user: AuthUser } };

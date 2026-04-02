@@ -1,4 +1,4 @@
-import type { DatabaseService } from './database.js';
+import type { DatabaseService } from '../core/database.js';
 import type { ConversationRow } from '../types/index.js';
 
 // ─── Constants ──────────────────────────────────────────────────

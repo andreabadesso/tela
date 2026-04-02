@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Context, Next } from 'hono';
-import type { DatabaseService } from '../../services/database.js';
-import type { RbacService } from '../../services/rbac.js';
+import type { DatabaseService } from '../../core/database.js';
+import type { RbacService } from '../../core/rbac.js';
 import type { AuthUser } from '../middleware.js';
 
 export interface AdminDeps {

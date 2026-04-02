@@ -1,5 +1,5 @@
 import type { NotificationChannel, NotificationMessage } from '../types.js';
-import type { DatabaseService } from '../../services/database.js';
+import type { DatabaseService } from '../../core/database.js';
 
 export class WebChannel implements NotificationChannel {
   readonly type = 'web' as const;
