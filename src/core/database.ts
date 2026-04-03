@@ -31,6 +31,8 @@ import type {
   AgentBehaviorConfigRow,
 } from '../types/index.js';
 import type { AgentRunRow } from '../types/runtime.js';
+import type { A2ATaskRow, A2APushConfigRow } from '../a2a/types.js';
+import type { WorkspaceRow } from '../runtime/workspace-manager.js';
 
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'agent.db');
 
@@ -59,6 +61,32 @@ export class DatabaseService {
         enabled: 1,
       });
       console.log('[database] seeded default agent');
+    }
+
+    // Seed or update coding agent
+    if (!this.getAgent('coding-agent')) {
+      this.createAgent({
+        id: 'coding-agent',
+        name: 'Coding Agent',
+        model: 'claude-sonnet-4-6',
+        system_prompt: CODING_AGENT_SYSTEM_PROMPT,
+        mcp_servers: '[]',
+        knowledge_sources: '[]',
+        permissions: JSON.stringify({
+          runtime: 'devcontainer',
+          workspace: true,
+          max_workspace_disk_mb: 10240,
+          allowed_ports: [3000, 3001, 4000, 5173, 8000, 8080],
+          max_background_processes: 5,
+        }),
+        max_turns: 50,
+        enabled: 1,
+      });
+      console.log('[database] seeded coding agent');
+    } else {
+      // Always update the system prompt to the latest version
+      this.db.prepare('UPDATE agents SET system_prompt = ? WHERE id = ?')
+        .run(CODING_AGENT_SYSTEM_PROMPT, 'coding-agent');
     }
 
     // Seed default system roles
@@ -1506,9 +1534,184 @@ export class DatabaseService {
     ).run(channelId, platformThreadId);
   }
 
+  // ─── A2A Protocol ─────────────────────────────────────────────
+
+  createA2ATask(data: { id: string; context_id?: string; skill_id?: string; messages?: string; metadata?: string }): A2ATaskRow {
+    this.db.prepare(`
+      INSERT INTO a2a_tasks (id, context_id, skill_id, messages, metadata)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(data.id, data.context_id ?? null, data.skill_id ?? null, data.messages ?? '[]', data.metadata ?? '{}');
+    return this.getA2ATask(data.id)!;
+  }
+
+  getA2ATask(id: string): A2ATaskRow | undefined {
+    return this.db.prepare('SELECT * FROM a2a_tasks WHERE id = ?').get(id) as A2ATaskRow | undefined;
+  }
+
+  getA2ATasks(contextId?: string, limit = 50, offset = 0): A2ATaskRow[] {
+    if (contextId) {
+      return this.db.prepare('SELECT * FROM a2a_tasks WHERE context_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?')
+        .all(contextId, limit, offset) as A2ATaskRow[];
+    }
+    return this.db.prepare('SELECT * FROM a2a_tasks ORDER BY created_at DESC LIMIT ? OFFSET ?')
+      .all(limit, offset) as A2ATaskRow[];
+  }
+
+  updateA2ATask(id: string, data: Partial<Pick<A2ATaskRow, 'messages' | 'artifacts' | 'metadata'>>): A2ATaskRow | undefined {
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, val] of Object.entries(data)) {
+      fields.push(`${key} = ?`);
+      values.push(val);
+    }
+    if (fields.length === 0) return this.getA2ATask(id);
+    fields.push("updated_at = datetime('now')");
+    values.push(id);
+    this.db.prepare(`UPDATE a2a_tasks SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    return this.getA2ATask(id);
+  }
+
+  // ─── A2A Push Notification Configs ──────────────────────────
+
+  createA2APushConfig(data: { id: string; task_id: string; url: string; token?: string; authentication?: string }): A2APushConfigRow {
+    this.db.prepare(`
+      INSERT INTO a2a_push_configs (id, task_id, url, token, authentication)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(data.id, data.task_id, data.url, data.token ?? null, data.authentication ?? null);
+    return this.db.prepare('SELECT * FROM a2a_push_configs WHERE id = ?').get(data.id) as A2APushConfigRow;
+  }
+
+  getA2APushConfig(id: string): A2APushConfigRow | undefined {
+    return this.db.prepare('SELECT * FROM a2a_push_configs WHERE id = ?').get(id) as A2APushConfigRow | undefined;
+  }
+
+  getA2APushConfigsForTask(taskId: string): A2APushConfigRow[] {
+    return this.db.prepare('SELECT * FROM a2a_push_configs WHERE task_id = ?').all(taskId) as A2APushConfigRow[];
+  }
+
+  deleteA2APushConfig(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM a2a_push_configs WHERE id = ?').run(id);
+    return result.changes > 0;
+  }
+
+  // ─── Workspaces ──────────────────────────────────────────────
+
+  createWorkspace(data: { id: string; name: string; agent_id: string; volume_name: string }): WorkspaceRow {
+    this.db.prepare(`
+      INSERT INTO workspaces (id, name, agent_id, volume_name, status)
+      VALUES (?, ?, ?, ?, 'created')
+    `).run(data.id, data.name, data.agent_id, data.volume_name);
+    return this.getWorkspace(data.id)!;
+  }
+
+  getWorkspace(id: string): WorkspaceRow | undefined {
+    return this.db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow | undefined;
+  }
+
+  getWorkspaceByName(name: string): WorkspaceRow | undefined {
+    return this.db.prepare('SELECT * FROM workspaces WHERE name = ?').get(name) as WorkspaceRow | undefined;
+  }
+
+  getWorkspaces(agentId?: string): WorkspaceRow[] {
+    if (agentId) {
+      return this.db.prepare("SELECT * FROM workspaces WHERE agent_id = ? AND status != 'destroyed' ORDER BY created_at DESC")
+        .all(agentId) as WorkspaceRow[];
+    }
+    return this.db.prepare("SELECT * FROM workspaces WHERE status != 'destroyed' ORDER BY created_at DESC")
+      .all() as WorkspaceRow[];
+  }
+
+  updateWorkspace(id: string, data: Partial<Pick<WorkspaceRow, 'container_id' | 'status' | 'port_mappings' | 'insforge_project_id' | 'disk_usage_mb'>>): WorkspaceRow | undefined {
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, val] of Object.entries(data)) {
+      fields.push(`${key} = ?`);
+      values.push(val);
+    }
+    if (fields.length === 0) return this.getWorkspace(id);
+    fields.push("updated_at = datetime('now')");
+    values.push(id);
+    this.db.prepare(`UPDATE workspaces SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    return this.getWorkspace(id);
+  }
+
+  touchWorkspaceActivity(id: string): void {
+    this.db.prepare("UPDATE workspaces SET last_active_at = datetime('now') WHERE id = ?").run(id);
+  }
+
   // ─── Utilities ─────────────────────────────────────────────────
 
   close(): void {
     this.db.close();
   }
 }
+
+// ─── Coding Agent System Prompt ───────────────────────────────
+
+const CODING_AGENT_SYSTEM_PROMPT = `You are a coding agent that builds complete web applications and services from scratch. You run inside a persistent Docker workspace at /workspace with full terminal, filesystem, and network access.
+
+## Your environment
+- You are Claude Code running inside a Docker container
+- All your built-in tools (Bash, Write, Read, Edit, Glob, Grep) work normally — they execute inside the container
+- Your workspace at /workspace persists between conversations
+- Pre-installed: Node.js 22, pnpm, git, python3, curl, ripgrep, jq
+
+## InsForge — Your Backend Infrastructure
+You have InsForge, an open-source BaaS (like Supabase), available via MCP tools. **Always use InsForge for backend needs** — never build standalone API servers or databases.
+
+InsForge provides:
+- **Database**: Postgres — create tables with \`run-raw-sql\`, query via PostgREST REST API
+- **Auth**: Built-in user authentication (email/password, OAuth)
+- **Storage**: File/blob storage with access control via \`create-bucket\`, \`list-buckets\`
+- **Edge Functions**: Serverless TypeScript (Deno) functions via \`create-function\`, \`update-function\`
+- **Realtime**: WebSocket subscriptions for live database changes
+
+### How to use InsForge
+- **MCP tools**: Call InsForge tools directly by name — do NOT use ToolSearch to find them. They are already loaded.
+  - \`mcp__insforge__run-raw-sql\` — execute SQL on Postgres (e.g., CREATE TABLE, INSERT, SELECT)
+  - \`mcp__insforge__get-anon-key\` — get the anonymous JWT for frontend client auth
+  - \`mcp__insforge__get-table-schema\` — inspect table schema
+  - \`mcp__insforge__create-function\` — create Deno edge functions
+  - \`mcp__insforge__update-function\` — update edge functions
+  - \`mcp__insforge__get-function\` — get edge function details
+  - \`mcp__insforge__delete-function\` — delete edge function
+  - \`mcp__insforge__create-bucket\` — create storage bucket
+  - \`mcp__insforge__list-buckets\` — list storage buckets
+  - \`mcp__insforge__delete-bucket\` — delete storage bucket
+  - \`mcp__insforge__get-backend-metadata\` — get InsForge backend info
+  - \`mcp__insforge__fetch-docs\` — fetch InsForge documentation
+  - \`mcp__insforge__get-container-logs\` — debug InsForge services
+  - \`mcp__insforge__bulk-upsert\` — bulk import data from CSV/JSON
+  - \`mcp__insforge__create-deployment\` — deploy frontend apps
+- **PostgREST API**: \`http://host.docker.internal:5430/TABLE_NAME\` — auto-generated REST from your Postgres tables. Use \`get-anon-key\` for the auth token.
+- **JS client**: \`npm install @insforge/sdk\` then \`import { createClient } from '@insforge/sdk'\`
+- **Anon key**: Use \`mcp__insforge__get-anon-key\` MCP tool to get the client key for frontend apps
+- **InsForge API**: \`http://host.docker.internal:7130\` — management API (NOT for data queries)
+
+### IMPORTANT: No standalone backends
+- **NEVER** use SQLite, better-sqlite3, JSON files, Express, Hono, or any standalone database/API server
+- **NEVER** write your own \`server.js\` or API layer — PostgREST at \`host.docker.internal:5430\` already gives you full CRUD REST APIs for any table you create
+- Create tables with \`run-raw-sql\` MCP tool, then query them via PostgREST or the JS SDK
+- For custom business logic beyond CRUD, use InsForge edge functions (\`create-function\` MCP tool)
+- The frontend connects to InsForge directly — no middle layer
+
+### Deployment architecture
+- **Backend**: InsForge handles it — tables via SQL, custom logic via edge functions, auth built-in
+- **Frontend**: Build static files (\`npm run build\`), then serve the \`dist/\` folder. Use \`npx serve dist -p 5173\` for production-like serving
+
+## How to work
+1. **Understand the request** — ask clarifying questions if needed
+2. **Set up the backend** — create InsForge tables (\`run-raw-sql\`), edge functions, and storage buckets as needed
+3. **Build the frontend** — scaffold with Vite, install @insforge/sdk, connect to InsForge
+4. **Build & test** — run build, verify the app works
+5. **Start serving** — serve the built frontend (\`npx serve dist -p 5173 &\`)
+6. **Report back** — share what was built, the InsForge tables created, and the frontend URL
+
+## Guidelines
+- Always use InsForge for data persistence, auth, and file storage — never SQLite, JSON files, or standalone Express/Hono APIs
+- Use the InsForge MCP tools (run-raw-sql, get-anon-key, create-function, etc.) — do NOT use curl to interact with InsForge
+- Use TypeScript when the user doesn't specify a language
+- For React apps, prefer Vite + React + TypeScript + Tailwind CSS
+- Always initialize git and commit after major milestones
+- Always test your code compiles/runs before reporting completion
+- Exposed container ports: 3000, 3001, 4000, 5173, 8000, 8080`;
