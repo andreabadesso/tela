@@ -16,10 +16,33 @@ export class Orchestrator {
 
   /**
    * Chat mode: route to best agent based on input, then process via runtime.
+   * If the resolved agent uses devcontainer runtime, auto-switches to background
+   * mode and returns an acknowledgment immediately.
    */
   async chat(input: AgentInput): Promise<AgentOutput> {
     const agentId = await this.resolveAgent(input);
+
+    // DevContainer agents: run inline for interactive sources (web, telegram)
+    // so the result flows back through the same connection.
+    // Only auto-background for non-interactive sources (API, A2A, schedule).
+    if (this.isDevContainerAgent(agentId) && input.source !== 'web' && input.source !== 'telegram') {
+      const runId = await this.assign(`auto:${crypto.randomUUID()}`, agentId, input.text);
+      return {
+        text: `Starting your coding task. I'll build this in a sandboxed workspace and update you when it's ready.\n\nRun ID: \`${runId}\``,
+      };
+    }
+
     return this.executeViaRuntime(agentId, input);
+  }
+
+  /** Check if an agent is configured to use the devcontainer runtime. */
+  private isDevContainerAgent(agentId: string): boolean {
+    const agent = this.db.getAgent(agentId);
+    if (!agent) return false;
+    try {
+      const permissions = JSON.parse(agent.permissions || '{}');
+      return permissions.runtime === 'devcontainer';
+    } catch { return false; }
   }
 
   /**
@@ -131,7 +154,7 @@ export class Orchestrator {
         throw new Error('Budget limit exceeded');
       }
 
-      const input: AgentInput = { text: prompt, source: 'cron' };
+      const input: AgentInput = { text: prompt, source: 'background' };
       const result = await this.executeViaRuntime(agentId, input);
 
       this.releaseCheckout(runId, 'completed');

@@ -119,10 +119,17 @@ async function main() {
   const knowledge = new KnowledgeIngestionService(agentService, defaultAgentId, vaultTools, gitSync, notificationManager);
 
   // Agent runtime registry
+  const devContainerConfig = config.devContainerEnabled ? {
+    image: config.devContainerImage,
+    hostCallbackPort: config.port,
+    defaultMemoryMb: config.devContainerMemoryMb,
+    defaultTimeoutMs: config.devContainerTimeoutMs,
+  } : undefined;
+
   const runtimeRegistry = createRuntimeRegistry(agentService, db, {
     image: config.agentDockerImage,
     hostCallbackPort: config.port,
-  });
+  }, devContainerConfig);
 
   // Multi-agent orchestrator
   const orchestrator = new Orchestrator(db, agentService, runtimeRegistry);

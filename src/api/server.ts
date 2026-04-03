@@ -25,7 +25,9 @@ import { setupRoutes } from './routes/setup.js';
 import { threadRoutes } from './routes/threads.js';
 import { memoryRoutes } from './routes/memories.js';
 import { preferenceRoutes } from './routes/preferences.js';
+import { a2aRoutes } from './routes/a2a.js';
 import { authMiddleware, createAuthMiddleware } from './middleware.js';
+import { A2ATaskManager } from '../a2a/task-manager.js';
 import type { AuthUser } from './middleware.js';
 import { RbacService } from '../core/rbac.js';
 import { setupWebSocket } from './ws.js';
@@ -82,6 +84,13 @@ export function createApi(deps: ApiDeps) {
 
   // Health (no auth required)
   app.route('/api', healthRoutes(deps));
+
+  // A2A protocol (agent card is public, /a2a endpoint uses its own API key auth)
+  if (deps.orchestrator) {
+    const baseUrl = process.env.A2A_BASE_URL || `http://localhost:${PORT}`;
+    const taskManager = new A2ATaskManager(deps.db, deps.orchestrator, deps.runtimeRegistry ?? null);
+    app.route('', a2aRoutes({ db: deps.db, taskManager, baseUrl }));
+  }
 
   // Internal MCP proxy (no auth — accessed by agent containers via run-scoped headers)
   const dockerRuntime = deps.runtimeRegistry?.get('docker') as DockerRuntime | undefined;

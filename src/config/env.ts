@@ -58,10 +58,25 @@ export const config = {
   googleSsoClientSecret: optionalEnv('GOOGLE_SSO_CLIENT_SECRET'),
 
   // Phase 8 — Agent Runtime (optional)
-  agentRuntime: (optionalEnv('AGENT_RUNTIME') || 'agent-os') as 'in-process' | 'docker' | 'agent-os' | 'remote',
+  agentRuntime: (optionalEnv('AGENT_RUNTIME') || 'agent-os') as 'in-process' | 'docker' | 'agent-os' | 'devcontainer' | 'remote',
   agentDockerImage: optionalEnv('AGENT_DOCKER_IMAGE') || 'tela-agent-worker:latest',
   agentDefaultTimeout: parseInt(process.env.AGENT_DEFAULT_TIMEOUT || '300000', 10),
 
+  // Phase 8b — DevContainer Runtime (optional)
+  devContainerImage: optionalEnv('DEVCONTAINER_IMAGE') || 'tela-devcontainer:latest',
+  devContainerEnabled: (optionalEnv('DEVCONTAINER_ENABLED') ?? 'true') === 'true',
+  devContainerMemoryMb: parseInt(process.env.DEVCONTAINER_MEMORY_MB || '2048', 10),
+  devContainerTimeoutMs: parseInt(process.env.DEVCONTAINER_TIMEOUT_MS || '1800000', 10),
+
   // Phase 9 — Agent Memory (optional)
   agentMemoryEnabled: (optionalEnv('AGENT_MEMORY_ENABLED') ?? 'true') === 'true',
+
+  // Phase 10 — A2A Protocol (optional)
+  a2aEnabled: (optionalEnv('A2A_ENABLED') ?? 'true') === 'true',
+  a2aBaseUrl: optionalEnv('A2A_BASE_URL'),
+
+  // Phase 10 — InsForge BaaS (optional)
+  // URL uses host.docker.internal because the coding agent runs inside a Docker container
+  insforgeApiUrl: optionalEnv('INSFORGE_API_URL') || 'http://host.docker.internal:7130',
+  insforgeApiKey: optionalEnv('INSFORGE_API_KEY'),
 };

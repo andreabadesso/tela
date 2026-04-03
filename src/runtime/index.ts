@@ -5,10 +5,13 @@ import type { AgentRow } from '../types/index.js';
 import { InProcessRuntime } from './in-process.js';
 import { DockerRuntime } from './docker.js';
 import { AgentOsRuntime } from './agent-os.js';
+import { DevContainerRuntime } from './devcontainer.js';
+import type { DevContainerConfig } from './workspace-manager.js';
 
 export { InProcessRuntime } from './in-process.js';
 export { DockerRuntime } from './docker.js';
 export { AgentOsRuntime } from './agent-os.js';
+export { DevContainerRuntime } from './devcontainer.js';
 
 /**
  * RuntimeRegistry — manages available runtimes and resolves which one to use.
@@ -81,6 +84,7 @@ export function createRuntimeRegistry(
   agentService: AgentService,
   db: DatabaseService,
   dockerConfig?: DockerRuntimeConfig,
+  devContainerConfig?: DevContainerConfig,
 ): RuntimeRegistry {
   const registry = new RuntimeRegistry();
 
@@ -105,6 +109,18 @@ export function createRuntimeRegistry(
       console.log('[runtime] Docker runtime registered');
     } catch (err) {
       console.warn('[runtime] Docker runtime registration failed:', err);
+    }
+  }
+
+  // Register DevContainer runtime (persistent workspaces for coding agents)
+  const wantsDevContainer = process.env.AGENT_RUNTIME === 'devcontainer' || devContainerConfig;
+  if (wantsDevContainer) {
+    try {
+      const devRuntime = new DevContainerRuntime(agentService, db, devContainerConfig);
+      registry.register(devRuntime);
+      console.log('[runtime] DevContainer runtime registered');
+    } catch (err) {
+      console.warn('[runtime] DevContainer runtime registration failed:', err);
     }
   }
 

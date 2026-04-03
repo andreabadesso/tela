@@ -96,7 +96,7 @@ export interface ToolSandbox {
 
 // ─── Runtime Config ──────────────────────────────────────────
 
-export type RuntimeType = 'in-process' | 'docker' | 'agent-os' | 'remote';
+export type RuntimeType = 'in-process' | 'docker' | 'agent-os' | 'devcontainer' | 'remote';
 
 export interface DockerRuntimeConfig {
   image?: string;           // default: built from nix flake
