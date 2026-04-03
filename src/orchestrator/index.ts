@@ -1,6 +1,7 @@
 import type { DatabaseService } from '../core/database.js';
 import type { AgentService } from '../agent/service.js';
 import type { AgentInput, AgentOutput } from '../types/index.js';
+import type { AgentStreamEvent } from '../types/runtime.js';
 import type { RuntimeRegistry } from '../runtime/index.js';
 
 export class Orchestrator {
@@ -46,6 +47,83 @@ export class Orchestrator {
   }
 
   /**
+   * Streaming chat — resolves the best agent and yields AgentStreamEvents in real-time.
+   * For devcontainer agents, uses the runtime registry to execute inside a container.
+   */
+  async *chatStream(input: AgentInput, signal?: AbortSignal): AsyncGenerator<AgentStreamEvent> {
+    const agentId = await this.resolveAgent(input);
+
+    // DevContainer agents on non-interactive sources: background mode (no streaming)
+    if (this.isDevContainerAgent(agentId) && input.source !== 'web' && input.source !== 'telegram') {
+      const runId = await this.assign(`auto:${crypto.randomUUID()}`, agentId, input.text);
+      yield {
+        type: 'result',
+        text: `Starting your coding task. I'll build this in a sandboxed workspace and update you when it's ready.\n\nRun ID: \`${runId}\``,
+        durationMs: 0,
+        timestamp: Date.now(),
+      };
+      return;
+    }
+
+    // For agents that require a sandboxed runtime, go through the runtime registry
+    if (this.isDevContainerAgent(agentId)) {
+      yield* this.streamViaRuntime(agentId, input, signal);
+      return;
+    }
+
+    yield* this.agentService.processStream(agentId, input, undefined, signal);
+  }
+
+  /**
+   * Stream an agent execution through the runtime registry.
+   * Resolves the runtime, executes, and yields events from the handle's stream + result.
+   */
+  private async *streamViaRuntime(agentId: string, input: AgentInput, signal?: AbortSignal): AsyncGenerator<AgentStreamEvent> {
+    if (!this.runtimeRegistry) {
+      console.error(`[orchestrator] BLOCKED: Agent "${agentId}" requires sandboxed runtime but no registry configured`);
+      yield { type: 'error', message: 'This agent requires a sandboxed runtime that is not currently configured.', timestamp: Date.now() };
+      return;
+    }
+
+    const agent = this.db.getAgent(agentId);
+    if (!agent) {
+      yield { type: 'error', message: `Agent not found: ${agentId}`, timestamp: Date.now() };
+      return;
+    }
+
+    const runtime = this.runtimeRegistry.resolve(agent);
+    const startTime = Date.now();
+
+    yield { type: 'status', message: `Starting ${runtime.name} runtime...`, timestamp: Date.now() };
+
+    try {
+      const handle = await runtime.execute({
+        agentId,
+        input,
+        config: agent,
+        mcpServers: [],
+        userId: input.userId,
+      });
+
+      // Stream events from the runtime handle
+      for await (const event of handle.stream) {
+        if (signal?.aborted) {
+          await runtime.cancel(handle.runId).catch(() => {});
+          yield { type: 'status', message: 'Cancelled', timestamp: Date.now() };
+          return;
+        }
+        yield event;
+      }
+
+      // Wait for the final result
+      const result = await handle.result;
+      yield { type: 'result', text: result.text, durationMs: Date.now() - startTime, timestamp: Date.now() };
+    } catch (err) {
+      yield { type: 'error', message: err instanceof Error ? err.message : String(err), timestamp: Date.now() };
+    }
+  }
+
+  /**
    * Batch mode: assign a task to an agent and run in background.
    * Returns the run_id for tracking.
    */
@@ -75,9 +153,15 @@ export class Orchestrator {
   /**
    * Execute an agent via the runtime registry.
    * Falls back to direct AgentService.process() if no registry configured.
+   * SAFETY: DevContainer agents are NEVER allowed to run unsandboxed.
    */
   private async executeViaRuntime(agentId: string, input: AgentInput): Promise<AgentOutput> {
     if (!this.runtimeRegistry) {
+      // Hard guard: devcontainer agents must never run without a runtime (unsandboxed)
+      if (this.isDevContainerAgent(agentId)) {
+        console.error(`[orchestrator] BLOCKED: DevContainer agent "${agentId}" cannot run without runtime registry — would execute unsandboxed on host`);
+        return { text: 'This agent requires a sandboxed runtime that is not currently configured. Please contact your administrator.' };
+      }
       return this.agentService.process(agentId, input);
     }
 

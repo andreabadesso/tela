@@ -128,3 +128,9 @@
     @apply font-sans;
     }
 }
+
+@keyframes pulse-slide {
+  0% { left: -50%; opacity: 0.4; }
+  50% { left: 50%; opacity: 1; }
+  100% { left: 100%; opacity: 0.4; }
+}

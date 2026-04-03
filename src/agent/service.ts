@@ -11,7 +11,7 @@ import { buildMemoryContext, buildMemoryMcpServer } from './memory.js';
 import { buildScheduleMcpServer, type ScheduleToolsContext } from '../tools/schedule-tools.js';
 import { buildInsforgeMcpServer } from './insforge-mcp-bridge.js';
 import { ConversationContextService } from './context.js';
-import type { ToolSandbox } from '../types/runtime.js';
+import type { ToolSandbox, AgentStreamEvent } from '../types/runtime.js';
 import type { JobRegistry } from '../jobs/registry.js';
 import type { SpawnedProcess, SpawnOptions } from '@anthropic-ai/claude-agent-sdk';
 
@@ -251,15 +251,32 @@ export class AgentService {
       .replace(/\{\{agent_name\}\}/g, agentName);
   }
 
-  async process(agentId: string, input: AgentInput, sandboxOrContainer?: ToolSandbox | ContainerExecOptions): Promise<AgentOutput> {
-    const startTime = Date.now();
+  /**
+   * Prepare all context needed for a query: system prompt, MCP servers, execution mode.
+   * Shared between processStream() and process().
+   */
+  private async prepareQueryContext(agentId: string, input: AgentInput, sandboxOrContainer?: ToolSandbox | ContainerExecOptions) {
     const agentConfig = this.db.getAgent(agentId);
     if (!agentConfig) throw new Error(`Agent not found: ${agentId}`);
     if (!agentConfig.enabled) throw new Error(`Agent is disabled: ${agentId}`);
 
+    // SAFETY: agents configured for sandboxed runtimes must NEVER run unsandboxed on host
+    if (!sandboxOrContainer) {
+      try {
+        const perms = JSON.parse(agentConfig.permissions || '{}');
+        if (perms.runtime === 'devcontainer' || perms.runtime === 'docker' || perms.runtime === 'agent-os') {
+          throw new Error(
+            `BLOCKED: Agent "${agentConfig.name}" (${agentId}) requires runtime "${perms.runtime}" but no sandbox was provided. ` +
+            `Refusing to execute unsandboxed on host filesystem.`
+          );
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message.startsWith('BLOCKED:')) throw e;
+      }
+    }
+
     console.log(`[agent-service] Processing with agent "${agentConfig.name}" (${agentId}): "${input.text.slice(0, 100)}" (source: ${input.source})`);
 
-    // Pull latest vault changes before processing
     await this.gitSync.pull();
 
     const today = new Date().toLocaleDateString('pt-BR', {
@@ -271,11 +288,8 @@ export class AgentService {
     });
 
     const interpolatedPrompt = this.interpolatePrompt(agentConfig.system_prompt, agentConfig.name);
-
-    // Build memory context
     const memoryContext = buildMemoryContext(this.db, agentId, input.userId);
 
-    // Build history context with token budget awareness
     const contextManager = new ConversationContextService(this.db);
     const now = new Date();
     const currentTime = now.toLocaleTimeString('pt-BR', {
@@ -333,8 +347,7 @@ export class AgentService {
       historyContext,
     ].filter(Boolean).join('\n');
 
-    // Resolve MCP servers
-    // Build knowledge source MCP servers for configured sources
+    // Build knowledge source MCP servers
     const knowledgeServers: Record<string, any> = {};
     const agentKnowledgeSources: string[] = (() => {
       try { return JSON.parse(agentConfig.knowledge_sources || '[]'); } catch { return []; }
@@ -363,18 +376,14 @@ export class AgentService {
       console.log(`[agent-service] Using sandboxed tool execution for agent "${agentConfig.name}"`);
     }
 
-    // Use sandbox-aware vault tools when a sandbox is provided
-    // Container exec agents don't need vault tools — Claude's built-in tools handle filesystem
     const vaultMcpServer = sandbox
       ? this.buildMcpServer(sandbox)
       : this.mcpServer;
 
-    // Build memory MCP server (scoped to this request's agentId + userId)
     const memoryMcpServer = config.agentMemoryEnabled
       ? buildMemoryMcpServer(this.db, agentId, input.userId)
       : null;
 
-    // Build schedule MCP server (scoped to this agent + source channel)
     const scheduleContext: ScheduleToolsContext = {
       sourceChannelId: input.metadata?.channelId as string | undefined,
       sourceThreadId: input.metadata?.threadId as string | undefined,
@@ -386,22 +395,13 @@ export class AgentService {
       ? buildScheduleMcpServer(this.db, this.jobRegistry, this, agentId, scheduleContext)
       : null;
 
-    // Resolve which MCP connections this agent is allowed to use
     const agentMcpServerIds: string[] = (() => {
       try { return JSON.parse(agentConfig.mcp_servers || '[]'); } catch { return []; }
     })();
 
     let mcpServers: Record<string, any>;
 
-    // Container exec agents: no vault/devcontainer MCP tools needed — Claude's built-in tools work inside the container.
-    // Only provide Tela-specific tools (memory, schedules, knowledge) which proxy via IPC through docker exec.
-    // InsForge MCP is configured INSIDE the container (via settings.json), not here — because
-    // the SDK spawns stdio MCP servers on the HOST, but insforge-mcp is only installed in the container.
     if (containerExec) {
-      // InsForge MCP bridge: SDK MCP server on the host that proxies to the InsForge stdio MCP.
-      // stdio MCP servers can't be used with spawnClaudeCodeProcess because Claude Code
-      // runs inside the container and tries to spawn them there (where host paths don't exist).
-      // SDK MCP servers (type: "sdk") get proxied through IPC correctly.
       const insforgeUrl = config.insforgeApiUrl.replace('host.docker.internal', 'localhost');
       const insforgeMcp = config.insforgeApiUrl
         ? await buildInsforgeMcpServer(insforgeUrl, config.insforgeApiKey)
@@ -423,7 +423,6 @@ export class AgentService {
         ...governedServers,
       };
     } else {
-      // No userId — filter external MCP servers by agent's configured mcp_servers list.
       const allExternal = this.getExternalMcpServers();
       const filteredExternal: Record<string, any> = {};
       if (agentMcpServerIds.length > 0) {
@@ -447,10 +446,31 @@ export class AgentService {
       };
     }
 
-    let resultText = '';
-
     console.log(`[agent:${agentConfig.name}] MCP servers: ${Object.keys(mcpServers).join(', ') || 'none'}`);
     console.log(`[agent:${agentConfig.name}] Container exec: ${!!containerExec}, Sandbox: ${!!sandbox}`);
+
+    return { agentConfig, systemPrompt, mcpServers, sandbox, containerExec };
+  }
+
+  /**
+   * Streaming agent execution — yields AgentStreamEvent as the SDK query() loop progresses.
+   * Callers get real-time thinking, text, tool_call, tool_result, status, and error events.
+   */
+  async *processStream(
+    agentId: string,
+    input: AgentInput,
+    sandboxOrContainer?: ToolSandbox | ContainerExecOptions,
+    signal?: AbortSignal,
+  ): AsyncGenerator<AgentStreamEvent> {
+    const startTime = Date.now();
+    const ts = () => Date.now();
+
+    const { agentConfig, systemPrompt, mcpServers, sandbox, containerExec } =
+      await this.prepareQueryContext(agentId, input, sandboxOrContainer);
+
+    yield { type: 'status', message: 'Thinking...', timestamp: ts() };
+
+    let resultText = '';
 
     try {
       for await (const message of query({
@@ -462,95 +482,93 @@ export class AgentService {
           permissionMode: 'bypassPermissions',
           allowDangerouslySkipPermissions: true,
           mcpServers,
-          // Container exec: Claude Code runs inside Docker — built-in tools are naturally sandboxed
           ...(containerExec ? { spawnClaudeCodeProcess: containerExec.spawnClaudeCodeProcess } : {}),
-          // Legacy sandbox: disable built-in tools to force MCP-only execution
           ...(sandbox ? { tools: [] } : {}),
-          // Stream stderr for visibility into what Claude Code is doing
           stderr: (data: string) => {
             const line = data.trim();
             if (line) console.log(`[agent:${agentConfig.name}] ${line}`);
           },
         },
       })) {
+        // Cancel support
+        if (signal?.aborted) {
+          yield { type: 'status', message: 'Cancelled', timestamp: ts() };
+          break;
+        }
+
         const m = message as Record<string, unknown>;
+
         if ('result' in message) {
           resultText = message.result ?? '';
-          console.log(`[agent:${agentConfig.name}] done (${(resultText as string).length} chars)`);
+          console.log(`[agent:${agentConfig.name}] done (${resultText.length} chars)`);
         } else if (m.type === 'assistant') {
-          // Assistant message with content blocks
           const msg = m.message as Record<string, unknown> | undefined;
           const content = (msg?.content ?? m.content) as Array<Record<string, unknown>> | undefined;
           if (content) {
             for (const block of content) {
               if (block.type === 'tool_use') {
-                console.log(`[agent:${agentConfig.name}] tool: ${block.name} ${block.input ? JSON.stringify(block.input).slice(0, 100) : ''}`);
+                const toolName = block.name as string;
+                console.log(`[agent:${agentConfig.name}] tool: ${toolName} ${block.input ? JSON.stringify(block.input).slice(0, 100) : ''}`);
+                yield {
+                  type: 'tool_call',
+                  name: toolName,
+                  args: block.input,
+                  toolCallId: block.id as string | undefined,
+                  timestamp: ts(),
+                };
+                yield { type: 'status', message: `Using tool: ${toolName}`, timestamp: ts() };
               } else if (block.type === 'thinking') {
                 const text = (block.thinking as string) ?? '';
                 if (text.length > 0) {
                   console.log(`[agent:${agentConfig.name}] thinking (${text.length} chars)`);
+                  yield { type: 'thinking', text, timestamp: ts() };
                 }
               } else if (block.type === 'text') {
                 const text = (block.text as string) ?? '';
                 if (text.length > 0) {
                   console.log(`[agent:${agentConfig.name}] text: ${text.slice(0, 150)}`);
+                  yield { type: 'text', text, timestamp: ts() };
                 }
               }
             }
           }
         } else if (m.type === 'tool_result' || m.subtype === 'tool_result') {
           console.log(`[agent:${agentConfig.name}] tool_result`);
+          yield {
+            type: 'tool_result',
+            toolCallId: m.tool_use_id as string | undefined,
+            content: typeof m.content === 'string' ? m.content : undefined,
+            timestamp: ts(),
+          };
         } else if (m.type === 'system') {
           const subtype = m.subtype as string ?? '';
           if (subtype === 'task_started') {
             console.log(`[agent:${agentConfig.name}] sub-agent started: ${m.description}`);
+            yield { type: 'status', message: `Sub-agent: ${m.description}`, timestamp: ts() };
           } else if (subtype === 'task_completed') {
             console.log(`[agent:${agentConfig.name}] sub-agent completed`);
+            yield { type: 'status', message: 'Sub-agent completed', timestamp: ts() };
           } else {
             console.log(`[agent:${agentConfig.name}] system: ${subtype}`);
           }
         } else if (m.type === 'error') {
           console.error(`[agent:${agentConfig.name}] error:`, m.error);
+          yield { type: 'error', message: String(m.error), timestamp: ts() };
         } else {
-          // Catch-all for unknown message types
           console.log(`[agent:${agentConfig.name}] msg: ${m.type}${m.subtype ? '/' + m.subtype : ''}`);
         }
       }
     } catch (err) {
       console.error(`[agent-service] Error with agent ${agentId}:`, err);
-      // For sandboxed/container agents, don't retry without tools — that would run unsandboxed
-      if (sandbox || containerExec) {
-        resultText = 'Error processing request. Please try again.';
-      } else {
-      // Retry once without MCP tools (non-sandboxed agents only)
-      try {
-        for await (const message of query({
-          prompt: input.text,
-          options: {
-            systemPrompt,
-            model: agentConfig.model,
-            maxTurns: Math.min(agentConfig.max_turns, 10),
-            permissionMode: 'bypassPermissions',
-            allowDangerouslySkipPermissions: true,
-          },
-        })) {
-          if ('result' in message) {
-            resultText = message.result ?? '';
-          }
-        }
-      } catch (retryErr) {
-        console.error('[agent-service] Retry failed:', retryErr);
-        resultText = 'Error processing request. Please try again.';
-      }
-      } // close non-sandbox else block
+      yield { type: 'error', message: err instanceof Error ? err.message : 'Unknown error', timestamp: ts() };
     }
 
-    // Flush any vault writes
+    // Flush vault writes
     await this.gitSync.flush();
 
     const durationMs = Date.now() - startTime;
 
-    // Only log successful conversations — never pollute history with error messages
+    // Log conversation
     if (resultText && resultText !== 'Error processing request. Please try again.' && resultText !== 'Agent execution timed out.') {
       this.db.logConversation({
         source: input.source,
@@ -559,6 +577,60 @@ export class AgentService {
         agentId,
         durationMs,
       });
+    }
+
+    // Yield final result
+    yield { type: 'result', text: resultText, durationMs, timestamp: ts() };
+  }
+
+  /**
+   * Non-streaming agent execution — consumes processStream() and returns the final text.
+   * Retries once without MCP tools for non-sandboxed agents on error.
+   */
+  async process(agentId: string, input: AgentInput, sandboxOrContainer?: ToolSandbox | ContainerExecOptions): Promise<AgentOutput> {
+    let resultText = '';
+    let hadError = false;
+
+    for await (const event of this.processStream(agentId, input, sandboxOrContainer)) {
+      if (event.type === 'result') {
+        resultText = event.text;
+      } else if (event.type === 'error') {
+        hadError = true;
+      }
+    }
+
+    // Retry once without MCP tools for non-sandboxed agents
+    if (hadError && !resultText) {
+      const isContainerExec = sandboxOrContainer && 'spawnClaudeCodeProcess' in sandboxOrContainer;
+      const sandbox = isContainerExec ? undefined : sandboxOrContainer as ToolSandbox | undefined;
+      if (!sandbox && !isContainerExec) {
+        const agentConfig = this.db.getAgent(agentId);
+        if (agentConfig) {
+          const { systemPrompt } = await this.prepareQueryContext(agentId, input);
+          try {
+            for await (const message of query({
+              prompt: input.text,
+              options: {
+                systemPrompt,
+                model: agentConfig.model,
+                maxTurns: Math.min(agentConfig.max_turns, 10),
+                permissionMode: 'bypassPermissions',
+                allowDangerouslySkipPermissions: true,
+              },
+            })) {
+              if ('result' in message) {
+                resultText = message.result ?? '';
+              }
+            }
+          } catch (retryErr) {
+            console.error('[agent-service] Retry failed:', retryErr);
+            resultText = 'Error processing request. Please try again.';
+          }
+        }
+      }
+      if (!resultText) {
+        resultText = 'Error processing request. Please try again.';
+      }
     }
 
     return { text: resultText };

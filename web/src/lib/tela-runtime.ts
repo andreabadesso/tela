@@ -14,6 +14,7 @@ interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  status?: string;
   toolCalls?: Array<{
     name: string;
     args?: unknown;
@@ -40,9 +41,11 @@ function convertMessage(msg: ChatMessage): ThreadMessageLike {
       status: msg.content || msg.toolCalls?.length ? { type: 'complete' } : { type: 'running' },
     };
   }
+  // Show status text while running, fallback to content
+  const displayText = msg.content || msg.status || '';
   return {
     role: 'assistant', id: msg.id,
-    content: msg.content || 'Thinking...',
+    content: displayText,
     createdAt: msg.timestamp,
     status: msg.content ? { type: 'complete' } : { type: 'running' },
   };
@@ -52,7 +55,11 @@ function convertMessage(msg: ChatMessage): ThreadMessageLike {
  * Send a chat message via SSE (POST with streaming response).
  * Returns an async iterable of SSE events.
  */
-async function* streamChat(text: string, agentId?: string): AsyncGenerator<{ event: string; data: string }> {
+async function* streamChat(
+  text: string,
+  agentId?: string,
+  signal?: AbortSignal,
+): AsyncGenerator<{ event: string; data: string }> {
   const token = localStorage.getItem('api_token') ?? '';
   const response = await fetch('/api/chat', {
     method: 'POST',
@@ -62,6 +69,7 @@ async function* streamChat(text: string, agentId?: string): AsyncGenerator<{ eve
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify({ text, agentId }),
+    signal,
   });
 
   if (!response.ok) {
@@ -79,26 +87,29 @@ async function* streamChat(text: string, agentId?: string): AsyncGenerator<{ eve
   const decoder = new TextDecoder();
   let buffer = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
+      buffer += decoder.decode(value, { stream: true });
 
-    // Parse SSE lines
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? ''; // keep incomplete line in buffer
+      // Parse SSE lines
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? ''; // keep incomplete line in buffer
 
-    let currentEvent = 'message';
-    for (const line of lines) {
-      if (line.startsWith('event: ')) {
-        currentEvent = line.slice(7).trim();
-      } else if (line.startsWith('data: ')) {
-        yield { event: currentEvent, data: line.slice(6) };
-        currentEvent = 'message';
+      let currentEvent = 'message';
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7).trim();
+        } else if (line.startsWith('data: ')) {
+          yield { event: currentEvent, data: line.slice(6) };
+          currentEvent = 'message';
+        }
       }
-      // Skip empty lines and comments
     }
+  } finally {
+    reader.releaseLock();
   }
 
   // Process remaining buffer
@@ -175,61 +186,104 @@ export function useTelaRuntime(agentId?: string, threadId?: string | null) {
       setMessages((prev) => [...prev, userMsg]);
       if (tid) api.addMessage(tid, 'user', userText).catch(() => {});
 
-      // Placeholder assistant message (shows "Thinking...")
+      // Placeholder assistant message
       const assistantId = generateId();
-      setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date() }]);
+      setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', status: 'Thinking...', timestamp: new Date() }]);
       setIsRunning(true);
 
-      // Stream via SSE
+      // Wire AbortController for cancel support
+      const abortController = new AbortController();
+      abortRef.current = abortController;
+
       try {
         let fullText = '';
+        const toolCalls: ChatMessage['toolCalls'] = [];
 
-        for await (const { event, data } of streamChat(userText, agentId)) {
+        for await (const { event, data } of streamChat(userText, agentId, abortController.signal)) {
+          const parsed = JSON.parse(data);
+
           switch (event) {
-            case 'thinking':
-              // Already showing placeholder
+            case 'thinking': {
+              setMessages((prev) =>
+                prev.map((m) => m.id === assistantId ? { ...m, status: 'Thinking...' } : m)
+              );
               break;
+            }
 
             case 'text': {
-              const parsed = JSON.parse(data);
-              fullText = parsed.text ?? '';
+              fullText += parsed.text ?? '';
               setMessages((prev) =>
                 prev.map((m) => m.id === assistantId ? { ...m, content: fullText } : m)
               );
               break;
             }
 
-            case 'tool_calls': {
-              const parsed = JSON.parse(data);
+            case 'tool_call': {
+              toolCalls!.push({ name: parsed.name, args: parsed.args });
               setMessages((prev) =>
-                prev.map((m) => m.id === assistantId ? { ...m, toolCalls: parsed.toolCalls } : m)
+                prev.map((m) => m.id === assistantId ? { ...m, toolCalls: [...toolCalls!] } : m)
               );
               break;
             }
 
-            case 'done':
+            case 'tool_result': {
+              // Match by toolCallId if available, otherwise update last tool call
+              if (parsed.content && toolCalls!.length > 0) {
+                const idx = parsed.toolCallId
+                  ? toolCalls!.findIndex((tc) => (tc as any).toolCallId === parsed.toolCallId)
+                  : toolCalls!.length - 1;
+                if (idx >= 0) {
+                  toolCalls![idx] = { ...toolCalls![idx], result: parsed.content };
+                  setMessages((prev) =>
+                    prev.map((m) => m.id === assistantId ? { ...m, toolCalls: [...toolCalls!] } : m)
+                  );
+                }
+              }
+              break;
+            }
+
+            case 'status': {
+              setMessages((prev) =>
+                prev.map((m) => m.id === assistantId ? { ...m, status: parsed.message } : m)
+              );
+              break;
+            }
+
+            case 'result': {
+              fullText = parsed.text ?? fullText;
+              setMessages((prev) =>
+                prev.map((m) => m.id === assistantId ? { ...m, content: fullText, status: undefined } : m)
+              );
               // Persist assistant response
               if (tid && fullText) {
                 api.addMessage(tid, 'assistant', fullText).catch(() => {});
               }
               break;
+            }
 
             case 'error': {
-              const parsed = JSON.parse(data);
-              fullText = `Error: ${parsed.error}`;
+              const errMsg = parsed.message || parsed.error || 'Unknown error';
               setMessages((prev) =>
-                prev.map((m) => m.id === assistantId ? { ...m, content: fullText } : m)
+                prev.map((m) => m.id === assistantId ? { ...m, content: `Error: ${errMsg}`, status: undefined } : m)
               );
               break;
             }
           }
         }
       } catch (err) {
-        const errText = `Error: ${err instanceof Error ? err.message : 'Unknown error'}`;
-        setMessages((prev) =>
-          prev.map((m) => m.id === assistantId ? { ...m, content: errText } : m)
-        );
+        if ((err as Error).name === 'AbortError') {
+          // User cancelled — keep partial text
+          setMessages((prev) =>
+            prev.map((m) => m.id === assistantId ? { ...m, status: undefined } : m)
+          );
+        } else {
+          const errText = `Error: ${err instanceof Error ? err.message : 'Unknown error'}`;
+          setMessages((prev) =>
+            prev.map((m) => m.id === assistantId ? { ...m, content: errText, status: undefined } : m)
+          );
+        }
       } finally {
+        abortRef.current = null;
         setIsRunning(false);
       }
     },

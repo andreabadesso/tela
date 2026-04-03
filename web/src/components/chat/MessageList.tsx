@@ -16,13 +16,14 @@ export interface ChatMessage {
 interface MessageListProps {
   messages: ChatMessage[];
   isThinking: boolean;
+  thinkingStatus?: string;
 }
 
 function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-export function MessageList({ messages, isThinking }: MessageListProps) {
+export function MessageList({ messages, isThinking, thinkingStatus }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -82,7 +83,7 @@ export function MessageList({ messages, isThinking }: MessageListProps) {
             )}
           </div>
         ))}
-        {isThinking && <ThinkingIndicator />}
+        {isThinking && <ThinkingIndicator status={thinkingStatus} />}
         <div ref={bottomRef} />
       </div>
     </ScrollArea>

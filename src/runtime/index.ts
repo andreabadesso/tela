@@ -32,9 +32,14 @@ export class RuntimeRegistry {
     return this.runtimes.get(name);
   }
 
+  /** Runtimes that require sandboxed execution — NEVER fall back to in-process. */
+  private static readonly SANDBOXED_RUNTIMES = new Set(['devcontainer', 'docker', 'agent-os']);
+
   /**
    * Resolve which runtime to use for a given agent.
    * Priority: agent config override → env default → agent-os fallback → in-process fallback.
+   * SAFETY: If an agent explicitly requires a sandboxed runtime and it's not available, throws
+   * instead of silently falling back to unsandboxed in-process execution.
    */
   resolve(agent: AgentRow): AgentRuntime {
     // Check per-agent override
@@ -49,7 +54,15 @@ export class RuntimeRegistry {
 
     if (runtime) return runtime;
 
-    // Fallback chain: agent-os → in-process
+    // SAFETY: if the agent explicitly requested a sandboxed runtime, never fall back to in-process
+    if (override && RuntimeRegistry.SANDBOXED_RUNTIMES.has(override)) {
+      throw new Error(
+        `Agent "${agent.name}" (${agent.id}) requires runtime "${override}" but it is not registered. ` +
+        `Refusing to fall back to in-process — that would execute unsandboxed on the host.`
+      );
+    }
+
+    // Fallback chain: agent-os → in-process (only for agents without explicit sandboxed runtime)
     const agentOs = this.runtimes.get('agent-os');
     if (agentOs) return agentOs;
 

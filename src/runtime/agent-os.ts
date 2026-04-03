@@ -224,13 +224,13 @@ export class AgentOsRuntime implements AgentRuntime {
     _runId: string,
     resultPromise: Promise<AgentOutput>,
   ): AsyncIterable<AgentStreamEvent> {
-    yield { type: 'status', data: { state: 'running', runtime: 'agent-os' }, timestamp: Date.now() };
+    yield { type: 'status', message: 'Running (agent-os)...', timestamp: Date.now() };
     try {
       const result = await resultPromise;
-      yield { type: 'text', data: result.text, timestamp: Date.now() };
-      yield { type: 'status', data: { state: 'completed' }, timestamp: Date.now() };
+      yield { type: 'text', text: result.text, timestamp: Date.now() };
+      yield { type: 'result', text: result.text, durationMs: 0, timestamp: Date.now() };
     } catch (err) {
-      yield { type: 'error', data: err instanceof Error ? err.message : String(err), timestamp: Date.now() };
+      yield { type: 'error', message: err instanceof Error ? err.message : String(err), timestamp: Date.now() };
     }
   }
 }

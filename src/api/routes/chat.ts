@@ -12,7 +12,7 @@ export function chatRoutes(deps: {
 }) {
   const app = new Hono();
 
-  // SSE streaming chat endpoint
+  // SSE streaming chat endpoint — streams AgentStreamEvents in real-time
   app.post('/chat', async (c) => {
     const body = await c.req.json<{ text: string; agentId?: string }>();
     if (!body.text) {
@@ -23,55 +23,43 @@ export function chatRoutes(deps: {
     const userId = user?.id;
 
     return streamSSE(c, async (stream) => {
-      const startTime = Date.now();
+      const abortController = new AbortController();
 
-      // Send thinking event immediately
-      await stream.writeSSE({ event: 'thinking', data: '{}' });
+      // Abort agent loop when client disconnects
+      stream.onAbort(() => {
+        abortController.abort();
+      });
 
       try {
-        let response;
+        const input = {
+          text: body.text,
+          source: 'web' as const,
+          userId,
+          metadata: body.agentId ? { agentId: body.agentId } : undefined,
+        };
+
+        let eventStream: AsyncIterable<import('../../types/runtime.js').AgentStreamEvent>;
 
         if (deps.orchestrator) {
-          response = await deps.orchestrator.chat({
-            text: body.text,
-            source: 'web',
-            userId,
-            metadata: body.agentId ? { agentId: body.agentId } : undefined,
-          });
+          eventStream = deps.orchestrator.chatStream(input, abortController.signal);
         } else {
           const agents = deps.db.getAgents();
           const agentId = body.agentId ?? agents.find((a) => a.enabled)?.id ?? '';
-          response = await deps.agentService.process(agentId, {
-            text: body.text,
-            source: 'web',
-            userId,
-          });
+          eventStream = deps.agentService.processStream(agentId, input, undefined, abortController.signal);
         }
 
-        // Send the full text
-        await stream.writeSSE({
-          event: 'text',
-          data: JSON.stringify({ text: response.text }),
-        });
-
-        // Send tool calls if any
-        if (response.toolCalls?.length) {
+        for await (const event of eventStream) {
+          if (abortController.signal.aborted) break;
           await stream.writeSSE({
-            event: 'tool_calls',
-            data: JSON.stringify({ toolCalls: response.toolCalls }),
+            event: event.type,
+            data: JSON.stringify(event),
           });
         }
-
-        // Send done
-        await stream.writeSSE({
-          event: 'done',
-          data: JSON.stringify({ durationMs: Date.now() - startTime }),
-        });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         await stream.writeSSE({
           event: 'error',
-          data: JSON.stringify({ error: message }),
+          data: JSON.stringify({ type: 'error', message, timestamp: Date.now() }),
         });
       }
     });

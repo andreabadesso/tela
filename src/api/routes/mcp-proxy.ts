@@ -110,14 +110,16 @@ export function mcpProxyRoutes(deps: McpProxyDeps) {
     const runId = c.req.header('X-Run-Id');
     if (!runId) return c.json({ error: 'Missing X-Run-Id' }, 400);
 
-    const event = await c.req.json<{ type: string; data: unknown }>();
+    const event = await c.req.json<Record<string, unknown>>();
+
+    // Normalize container events to AgentStreamEvent shape
+    const streamEvent = {
+      ...event,
+      timestamp: Date.now(),
+    } as import('../../types/runtime.js').AgentStreamEvent;
 
     if (deps.dockerRuntime) {
-      deps.dockerRuntime.pushEvent(runId, {
-        type: event.type as any,
-        data: event.data,
-        timestamp: Date.now(),
-      });
+      deps.dockerRuntime.pushEvent(runId, streamEvent);
     }
 
     return c.json({ status: 'ok' });

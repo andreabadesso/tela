@@ -80,9 +80,23 @@ export class DevContainerRuntime implements AgentRuntime {
       container_id: containerId,
     });
 
-    // Execute agent inside the container
-    const resultPromise = this.runWithTimeout(runId, params, containerId, timeout, abort.signal);
-    const stream = this.createStream(runId);
+    // Shared event buffer for streaming — processStream yields events here,
+    // createStream consumes them and forwards to the caller.
+    const eventBuffer: AgentStreamEvent[] = [];
+    let streamDone = false;
+    let streamNotify: (() => void) | null = null;
+
+    const pushEvent = (event: AgentStreamEvent) => {
+      eventBuffer.push(event);
+      streamNotify?.();
+    };
+
+    // Execute agent inside the container using processStream for real-time events
+    const resultPromise = this.runStreamingWithTimeout(
+      runId, params, containerId, timeout, abort.signal, pushEvent,
+      () => { streamDone = true; streamNotify?.(); },
+    );
+    const stream = this.createStream(runId, eventBuffer, () => streamDone, (cb) => { streamNotify = cb; });
 
     return { runId, stream, result: resultPromise };
   }
@@ -217,12 +231,17 @@ export class DevContainerRuntime implements AgentRuntime {
 
   // ─── Internal ─────────────────────────────────────────────
 
-  private async runWithTimeout(
+  /**
+   * Run agent via processStream inside the container, pushing events to the shared buffer.
+   */
+  private async runStreamingWithTimeout(
     runId: string,
     params: AgentExecutionParams,
     containerId: string,
     timeout: number,
     signal: AbortSignal,
+    pushEvent: (event: AgentStreamEvent) => void,
+    onDone: () => void,
   ): Promise<AgentOutput> {
     return new Promise<AgentOutput>(async (resolve, reject) => {
       const timer = setTimeout(() => {
@@ -234,20 +253,35 @@ export class DevContainerRuntime implements AgentRuntime {
           error: `Timed out after ${timeout}ms`,
         });
         this.activeRuns.delete(runId);
+        pushEvent({ type: 'error', message: 'Agent execution timed out.', timestamp: Date.now() });
+        onDone();
         resolve({ text: 'Agent execution timed out.' });
       }, timeout);
 
       signal.addEventListener('abort', () => {
         clearTimeout(timer);
+        onDone();
         reject(new Error('Run cancelled'));
       });
 
       try {
         console.log(`[devcontainer] Starting agent execution for run ${runId} (container: ${containerId.slice(0, 12)})`);
 
-        const result = await this.agentService.process(params.agentId, params.input, {
+        let resultText = '';
+        const containerExecOptions = {
           spawnClaudeCodeProcess: this.buildContainerSpawn(containerId),
-        });
+        };
+
+        for await (const event of this.agentService.processStream(
+          params.agentId, params.input, containerExecOptions, signal,
+        )) {
+          pushEvent(event);
+          if (event.type === 'result') {
+            resultText = event.text;
+          }
+        }
+
+        const result: AgentOutput = { text: resultText };
 
         console.log(`[devcontainer] Agent execution completed for run ${runId}`);
         clearTimeout(timer);
@@ -261,6 +295,7 @@ export class DevContainerRuntime implements AgentRuntime {
         });
 
         this.activeRuns.delete(runId);
+        onDone();
         resolve(result);
       } catch (err) {
         clearTimeout(timer);
@@ -275,24 +310,41 @@ export class DevContainerRuntime implements AgentRuntime {
         });
 
         this.activeRuns.delete(runId);
+        pushEvent({ type: 'error', message: error, timestamp: Date.now() });
+        onDone();
         reject(err);
       }
     });
   }
 
-  private async *createStream(runId: string): AsyncIterable<AgentStreamEvent> {
-    yield { type: 'status', data: { state: 'running', runtime: 'devcontainer' }, timestamp: Date.now() };
+  /**
+   * Consume events from the shared buffer as an async iterable.
+   */
+  private async *createStream(
+    _runId: string,
+    eventBuffer: AgentStreamEvent[],
+    isDone: () => boolean,
+    onNotify: (cb: () => void) => void,
+  ): AsyncIterable<AgentStreamEvent> {
+    let cursor = 0;
 
-    // Poll until the run completes
-    while (this.activeRuns.has(runId)) {
-      await new Promise(r => setTimeout(r, 500));
+    while (true) {
+      // Drain any buffered events
+      while (cursor < eventBuffer.length) {
+        yield eventBuffer[cursor++];
+      }
+
+      if (isDone()) break;
+
+      // Wait for new events
+      await new Promise<void>((resolve) => {
+        onNotify(resolve);
+      });
     }
 
-    const run = this.db.getAgentRun(runId);
-    yield {
-      type: 'status',
-      data: { state: run?.status ?? 'completed' },
-      timestamp: Date.now(),
-    };
+    // Drain any final events
+    while (cursor < eventBuffer.length) {
+      yield eventBuffer[cursor++];
+    }
   }
 }

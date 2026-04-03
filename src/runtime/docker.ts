@@ -365,7 +365,7 @@ export class DockerRuntime implements AgentRuntime {
   }
 
   private async *createStream(runId: string): AsyncIterable<AgentStreamEvent> {
-    yield { type: 'status', data: { state: 'running', runtime: 'docker' }, timestamp: Date.now() };
+    yield { type: 'status', message: 'Running (docker)...', timestamp: Date.now() };
 
     // Poll for events from the pending results
     const pending = this.pendingResults.get(runId);
@@ -387,6 +387,6 @@ export class DockerRuntime implements AgentRuntime {
       yield pending.events[i];
     }
 
-    yield { type: 'status', data: { state: 'completed' }, timestamp: Date.now() };
+    yield { type: 'status', message: 'Completed', timestamp: Date.now() };
   }
 }

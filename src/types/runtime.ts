@@ -54,11 +54,15 @@ export type AgentRunStatus =
 
 // ─── Stream Events ───────────────────────────────────────────
 
-export interface AgentStreamEvent {
-  type: 'text' | 'tool_call' | 'tool_result' | 'error' | 'status';
-  data: unknown;
-  timestamp: number;
-}
+export type AgentStreamEvent =
+  | { type: 'thinking'; text?: string; timestamp: number }
+  | { type: 'text'; text: string; timestamp: number }
+  | { type: 'tool_call'; name: string; args?: unknown; toolCallId?: string; timestamp: number }
+  | { type: 'tool_result'; toolCallId?: string; content?: string; timestamp: number }
+  | { type: 'tool_progress'; name: string; elapsed?: number; timestamp: number }
+  | { type: 'status'; message: string; timestamp: number }
+  | { type: 'result'; text: string; durationMs: number; costUsd?: number; turns?: number; timestamp: number }
+  | { type: 'error'; message: string; timestamp: number };
 
 // ─── Run Record (DB) ─────────────────────────────────────────
 

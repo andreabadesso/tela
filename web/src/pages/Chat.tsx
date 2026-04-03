@@ -1,25 +1,21 @@
 import { useState, useEffect } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { AssistantRuntimeProvider } from '@assistant-ui/core/react';
 import { Thread } from '@/components/assistant-ui/thread';
-import { ChevronDown, Bot, Plus, MessageSquare, Trash2 } from 'lucide-react';
+import { AgentPickerModal } from '@/components/chat/AgentPicker';
+import { Plus, MessageSquare, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { api, type ChatThread } from '@/lib/api';
 import { useTelaRuntime } from '@/lib/tela-runtime';
 import { cn } from '@/lib/utils';
 
 export function Chat({ initialThreadId }: { initialThreadId?: string }) {
-  const queryClient = useQueryClient();
   const [selectedAgent, setSelectedAgent] = useState<string | undefined>();
+  const [selectedAgentName, setSelectedAgentName] = useState<string | undefined>();
   const [activeThreadId, setActiveThreadId] = useState<string | null>(initialThreadId ?? null);
+  const [showAgentPicker, setShowAgentPicker] = useState(false);
 
-  const { data: agents } = useQuery({
+  const { data: agents = [] } = useQuery({
     queryKey: ['agents'],
     queryFn: () => api.getAgents(),
     retry: false,
@@ -49,25 +45,53 @@ export function Chat({ initialThreadId }: { initialThreadId?: string }) {
     }
   }, []);
 
+  // When opening a thread, lock agent to the thread's agent
+  useEffect(() => {
+    if (activeThreadId) {
+      const thread = threads.find((t) => t.id === activeThreadId);
+      if (thread) {
+        const agent = agents.find((a) => a.id === thread.agent_id);
+        setSelectedAgent(thread.agent_id !== 'default' ? thread.agent_id : undefined);
+        setSelectedAgentName(agent?.name);
+      }
+    }
+  }, [activeThreadId, threads, agents]);
+
   function startNewChat() {
+    // Show the agent picker modal
+    setShowAgentPicker(true);
+  }
+
+  function handleAgentSelected(agent: { id: string; name: string }) {
+    setShowAgentPicker(false);
+    setSelectedAgent(agent.id);
+    setSelectedAgentName(agent.name);
     setActiveThreadId(null);
     window.history.replaceState(null, '', '#/');
   }
 
   function openThread(thread: ChatThread) {
     setActiveThreadId(thread.id);
+    const agent = agents.find((a) => a.id === thread.agent_id);
     setSelectedAgent(thread.agent_id !== 'default' ? thread.agent_id : undefined);
+    setSelectedAgentName(agent?.name);
     window.history.replaceState(null, '', `#/chat/${thread.id}`);
   }
 
   async function deleteThread(id: string, e: React.MouseEvent) {
     e.stopPropagation();
     await api.deleteThread(id);
-    if (activeThreadId === id) startNewChat();
+    if (activeThreadId === id) {
+      setActiveThreadId(null);
+      setSelectedAgent(undefined);
+      setSelectedAgentName(undefined);
+      window.history.replaceState(null, '', '#/');
+    }
     refetchThreads();
   }
 
-  const selectedAgentName = agents?.find((a) => a.id === selectedAgent)?.name;
+  // Resolve display name for current agent
+  const agentLabel = selectedAgentName || agents.find((a) => a.id === selectedAgent)?.name;
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -122,31 +146,14 @@ export function Chat({ initialThreadId }: { initialThreadId?: string }) {
 
         {/* Chat area */}
         <div className="flex-1 flex flex-col min-w-0">
-          {/* Top bar */}
-          <div className="flex h-12 items-center justify-between border-b border-border px-4">
-            <div className="flex items-center gap-2">
-              <Bot className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-medium">Chat</span>
+          {/* Top bar — shows locked agent name */}
+          {agentLabel && (
+            <div className="flex h-10 items-center border-b border-border px-4">
+              <span className="text-xs font-medium text-muted-foreground">
+                Talking to <span className="text-foreground">{agentLabel}</span>
+              </span>
             </div>
-            {agents && agents.length > 0 && (
-              <DropdownMenu>
-                <DropdownMenuTrigger className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-input bg-background px-3 text-xs font-medium shadow-xs transition-colors hover:bg-accent hover:text-accent-foreground h-7">
-                  {selectedAgentName || 'Default Agent'}
-                  <ChevronDown className="h-3 w-3" />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => setSelectedAgent(undefined)}>
-                    Default Agent
-                  </DropdownMenuItem>
-                  {agents.map((agent) => (
-                    <DropdownMenuItem key={agent.id} onClick={() => setSelectedAgent(agent.id)}>
-                      {agent.name}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-          </div>
+          )}
 
           {/* Thread */}
           <div className="flex-1 overflow-hidden">
@@ -154,6 +161,14 @@ export function Chat({ initialThreadId }: { initialThreadId?: string }) {
           </div>
         </div>
       </div>
+
+      {/* Agent picker modal */}
+      <AgentPickerModal
+        agents={agents}
+        open={showAgentPicker}
+        onSelect={handleAgentSelected}
+        onClose={() => setShowAgentPicker(false)}
+      />
     </AssistantRuntimeProvider>
   );
 }
