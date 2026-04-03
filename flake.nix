@@ -51,6 +51,85 @@
           '';
         };
 
+        # DevContainer image — rich development environment for coding agents
+        # Includes full toolchain for building web apps (Node, Python, Go, Rust, etc.)
+        devContainerImage = pkgs.dockerTools.buildLayeredImage {
+          name = "tela-devcontainer";
+          tag = "latest";
+
+          contents = [
+            # Core
+            pkgs.nodejs_22
+            pkgs.coreutils
+            pkgs.findutils
+            pkgs.gnugrep
+            pkgs.gnused
+            pkgs.cacert
+            pkgs.bashInteractive
+            pkgs.gnumake
+            # Networking / debugging
+            pkgs.curl
+            pkgs.wget
+            # Version control
+            pkgs.git
+            pkgs.openssh
+            # Search / navigation
+            pkgs.ripgrep
+            pkgs.tree
+            pkgs.jq
+            # Node.js tooling
+            pkgs.nodePackages.npm
+            pkgs.nodePackages.pnpm
+            # Python
+            pkgs.python312
+            pkgs.python312Packages.pip
+            pkgs.python312Packages.virtualenv
+          ];
+
+          config = {
+            Cmd = [ "bash" ];
+            WorkingDir = "/workspace";
+            Env = [
+              "NODE_ENV=development"
+              "HOME=/root"
+              "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+              "PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ];
+            ExposedPorts = {
+              "3000/tcp" = {};
+              "3001/tcp" = {};
+              "4000/tcp" = {};
+              "5173/tcp" = {};
+              "8000/tcp" = {};
+              "8080/tcp" = {};
+            };
+            Volumes = {
+              "/workspace" = {};
+            };
+            Labels = {
+              "org.opencontainers.image.title" = "tela-devcontainer";
+              "org.opencontainers.image.description" = "Development container for Tela coding agents — full web dev toolchain";
+            };
+          };
+
+          extraCommands = ''
+            mkdir -p workspace root tmp
+          '';
+        };
+
+        # Build script to prepare and load the devcontainer image
+        buildDevContainer = pkgs.writeShellScriptBin "build-devcontainer" ''
+          set -euo pipefail
+          echo "Building tela-devcontainer image with Nix..."
+
+          IMAGE_PATH=$(nix build .#devContainerImage --no-link --print-out-paths)
+          echo "Base image built: $IMAGE_PATH"
+
+          docker load < "$IMAGE_PATH"
+          echo "✓ tela-devcontainer:latest ready"
+          docker images tela-devcontainer:latest
+        '';
+
         # Build script to prepare and load the image
         buildWorkerImage = pkgs.writeShellScriptBin "build-worker-image" ''
           set -euo pipefail
@@ -96,13 +175,25 @@
         # Docker image for agent workers
         packages.agentWorkerImage = agentWorkerImage;
 
+        # Docker image for devcontainer (coding agents)
+        packages.devContainerImage = devContainerImage;
+
         # Helper script to build + load the worker image
         packages.buildWorkerImage = buildWorkerImage;
+
+        # Helper script to build + load the devcontainer image
+        packages.buildDevContainer = buildDevContainer;
 
         # Convenience: `nix run .#build-worker` to build the image
         apps.build-worker = {
           type = "app";
           program = "${buildWorkerImage}/bin/build-worker-image";
+        };
+
+        # Convenience: `nix run .#build-devcontainer` to build the devcontainer image
+        apps.build-devcontainer = {
+          type = "app";
+          program = "${buildDevContainer}/bin/build-devcontainer";
         };
       });
 }
