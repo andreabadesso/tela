@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { Thread } from '@/components/assistant-ui/thread';
 import { api, type ProjectSession } from '@/lib/api';
@@ -36,6 +36,7 @@ export function ProjectChat({ projectId }: { projectId: string }) {
   const { data: sessions = [], isLoading: sessionsLoading } = useQuery({
     queryKey: ['project-sessions', projectId],
     queryFn: () => api.getProjectSessions(projectId),
+    placeholderData: keepPreviousData,
   });
 
   const { data: agents = [] } = useQuery({

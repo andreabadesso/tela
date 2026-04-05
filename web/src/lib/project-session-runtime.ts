@@ -94,7 +94,18 @@ export function parseUserInput(session: ProjectSession): string {
  */
 export function useProjectChatRuntime(projectId: string, sessions: ProjectSession[]) {
   // Map<sessionId, streaming assistant message>
-  const [streamOverrides, setStreamOverrides] = useState<Map<string, ChatMessage>>(new Map());
+  const [streamOverrides, setStreamOverrides] = useState<Map<string, ChatMessage>>(() => {
+    const initial = new Map<string, ChatMessage>();
+    for (const session of sessions) {
+      if (session.status === 'pending' || session.status === 'running') {
+        try {
+          const saved = localStorage.getItem(`tela:stream:${session.id}`);
+          if (saved) initial.set(session.id, JSON.parse(saved));
+        } catch { /* ignore */ }
+      }
+    }
+    return initial;
+  });
   const [isRunning, setIsRunning] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const streamingRef = useRef<string | null>(null);
@@ -171,7 +182,10 @@ export function useProjectChatRuntime(projectId: string, sessions: ProjectSessio
               id: assistantId, role: 'assistant' as const, content: '', status: 'Working...', timestamp: new Date(),
             };
             const next = new Map(map);
-            next.set(sessionId, updater(prev));
+            const updated = updater(prev);
+            next.set(sessionId, updated);
+            // Persist for page refresh recovery
+            try { localStorage.setItem(`tela:stream:${sessionId}`, JSON.stringify(updated)); } catch { /* ignore */ }
             return next;
           });
         };
@@ -251,6 +265,7 @@ export function useProjectChatRuntime(projectId: string, sessions: ProjectSessio
         next.delete(wasStreaming);
         return next;
       });
+      try { localStorage.removeItem(`tela:stream:${wasStreaming}`); } catch { /* ignore */ }
     }
   }, [sessions]);
 
