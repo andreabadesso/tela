@@ -56,6 +56,11 @@ export function ProjectChat({ projectId }: { projectId: string }) {
 
   const hasActiveSession = sessions.some(isActiveSession);
 
+  const appUrl = project?.app_url ?? null;
+  const workspaceId = appUrl
+    ? new URL(appUrl).pathname.split('/apps/')[1]?.split('/')[0] ?? null
+    : null;
+
   // Poll while active
   useEffect(() => {
     if (hasActiveSession) {
@@ -95,11 +100,6 @@ export function ProjectChat({ projectId }: { projectId: string }) {
   });
 
   const { runtime, isRunning } = useProjectChatRuntime(projectId, sessions);
-
-  const appUrl = project?.app_url ?? null;
-  const workspaceId = appUrl
-    ? new URL(appUrl).pathname.split('/apps/')[1]?.split('/')[0] ?? null
-    : null;
 
   const { data: workspaceDetail } = useQuery({
     queryKey: ['workspace', workspaceId],
