@@ -68,6 +68,20 @@ export function workspaceRoutes(deps: {
     });
   });
 
+  // Get single workspace by ID
+  app.get('/workspaces/:id', (c) => {
+    const user = (c as unknown as { get(key: 'user'): AuthUser | undefined }).get('user');
+    const ws = deps.db.getWorkspace(c.req.param('id'));
+    if (!ws || ws.status === 'destroyed') return c.json({ error: 'not_found' }, 404);
+    if (!user) return c.json({ error: 'unauthorized' }, 401);
+    if (!user.roles.includes('admin') && ws.owner_id !== user.id && ws.visibility !== 'public') {
+      if (ws.visibility !== 'team' || !ws.team_id || !user.teams.includes(ws.team_id)) {
+        return c.json({ error: 'forbidden' }, 403);
+      }
+    }
+    return c.json({ id: ws.id, status: ws.status, static_app_path: ws.static_app_path, port_mappings: ws.port_mappings });
+  });
+
   // List workspaces (filtered by user access)
   app.get('/workspaces', (c) => {
     const user = (c as unknown as { get(key: 'user'): AuthUser | undefined }).get('user');

@@ -170,11 +170,14 @@ export function ProjectChat({ projectId }: { projectId: string }) {
               >
                 <LayoutPanelLeft className="h-3.5 w-3.5" />
               </Button>
-              <Button variant="outline" size="sm" className="h-7 text-xs" asChild>
-                <a href={appUrl} target="_blank" rel="noopener noreferrer">
-                  <ExternalLink className="h-3 w-3 mr-1.5" />View App
-                </a>
-              </Button>
+              <a
+                href={appUrl ?? '#'}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center h-7 px-2 text-xs rounded-md border border-border bg-background hover:bg-accent hover:text-accent-foreground transition-colors"
+              >
+                <ExternalLink className="h-3 w-3 mr-1.5" />View App
+              </a>
             </>
           )}
         </div>
