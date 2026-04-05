@@ -338,6 +338,13 @@ export class WorkspaceManager {
     return `${baseUrl}/apps/${workspaceId}`;
   }
 
+  /** Clear the static deploy so the proxy routes to the live container instead. */
+  clearStaticApp(workspaceId: string): void {
+    const ws = this.db.getWorkspace(workspaceId);
+    if (!ws || ws.status === 'destroyed') return;
+    this.db.updateWorkspace(workspaceId, { static_app_path: null as any });
+  }
+
   /**
    * Attach a session container to a workspace so that `exposePort` can work
    * and the app proxy knows to do live proxying.

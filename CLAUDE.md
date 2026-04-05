@@ -122,6 +122,7 @@ bugs/
   001-project-workspace-fk-constraint.md   — workspace creation fails if agent_id is not a real DB ID
   002-preview-no-port-before-serve.md      — iframe shows JSON error before agent calls serve_workspace_app
   003-project-chat-history-lost-on-refresh.md — stream state lost on page refresh (use localStorage)
+  004-live-preview-blocked-by-static-app-path.md — live dev server ignored because static_app_path persists across sessions
 ```
 
 When you discover a new bug (even if you fix it immediately), add a file to `bugs/` describing what happened, why, and how to avoid it.
