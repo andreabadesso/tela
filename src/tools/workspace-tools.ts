@@ -43,10 +43,6 @@ export function buildWorkspaceToolsMcpServer(workspaceId: string, workspaceManag
 
         if (directory !== undefined) {
           url = workspaceManager.setStaticApp(workspaceId, directory);
-        } else if (api_port !== undefined) {
-          // Live preview only (no directory) — clear any stale static deploy so the
-          // proxy routes to the live dev server instead of old built files.
-          workspaceManager.clearStaticApp(workspaceId);
         }
 
         if (api_port !== undefined) {

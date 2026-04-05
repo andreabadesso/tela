@@ -415,26 +415,30 @@ async function handleAppProxy(c: Context, deps: AppProxyDeps): Promise<Response>
     return c.json({ error: 'forbidden', message: 'You do not have access to this application' }, 403);
   }
 
-  // ── Static file serving + hybrid container backend ──────────────────────
-  // When a static_app_path is registered, serve files directly from disk.
-  // For non-file paths (API calls), fall through to the container backend if running.
-  // Final fallback: index.html for SPA client-side routing.
+  const url = new URL(c.req.url);
+  const prefix = `/apps/${workspaceId}`;
+  const subpath = c.req.path.startsWith(prefix) ? c.req.path.slice(prefix.length) || '/' : c.req.path;
+
+  // /__tela/* and /__insforge/* are always handled locally regardless of mode
+  if (subpath.startsWith('/__tela/')) return handleTelaEndpoint(subpath, user, workspace, deps);
+  if (subpath.startsWith('/__insforge')) return proxyInsforge(subpath, c.req.raw, user);
+
+  // ── PRIORITY: live dev server (container running with port mappings) ────────
+  // When a session container is running, ALWAYS proxy to it — even if a static
+  // deploy exists. The dev server is authoritative during active development.
+  if (workspace.status === 'running') {
+    const portMappings: { containerPort: number; hostPort: number; url: string }[] = JSON.parse(workspace.port_mappings);
+    const target = resolveTarget(c.req.path, workspaceId, portMappings);
+    if (target) {
+      const headers = buildProxyHeaders(c.req.raw.headers, user);
+      const targetUrl = `http://127.0.0.1:${target.hostPort}${target.subpath}${url.search}`;
+      return proxyRequest(c.req.raw, targetUrl, headers);
+    }
+  }
+
+  // ── FALLBACK: static deploy (persists after container stops) ────────────────
   if (workspace.static_app_path) {
-    const url = new URL(c.req.url);
-    const prefix = `/apps/${workspaceId}`;
-    const subpath = c.req.path.startsWith(prefix) ? c.req.path.slice(prefix.length) || '/' : c.req.path;
-
-    // /__tela/* endpoints (identity, JWT) always handled locally
-    if (subpath.startsWith('/__tela/')) {
-      return handleTelaEndpoint(subpath, user, workspace, deps);
-    }
-
-    // /__insforge/* — pass-through to InsForge with server-side API key injection
-    if (subpath.startsWith('/__insforge')) {
-      return proxyInsforge(subpath, c.req.raw, user);
-    }
-
-    // 1. Try static file from disk
+    // 1. Try exact static file
     const staticResponse = await serveStaticFile(
       subpath + url.search,
       workspace.volume_name,
@@ -446,20 +450,7 @@ async function handleAppProxy(c: Context, deps: AppProxyDeps): Promise<Response>
     );
     if (staticResponse) return staticResponse;
 
-    // 2. No static file matched — try the container backend (API calls, SSR, etc.)
-    if (workspace.status === 'running') {
-      const portMappings: { containerPort: number; hostPort: number; url: string }[] = JSON.parse(workspace.port_mappings);
-      const target = resolveTarget(c.req.path, workspaceId, portMappings);
-      if (target) {
-        const headers = buildProxyHeaders(c.req.raw.headers, user);
-        const targetUrl = `http://127.0.0.1:${target.hostPort}${target.subpath}${url.search}`;
-        const backendResponse = await proxyRequest(c.req.raw, targetUrl, headers);
-        // Only use the backend response if it's not a 404 — let 404s fall through to SPA
-        if (backendResponse.status !== 404) return backendResponse;
-      }
-    }
-
-    // 3. SPA fallback — serve index.html for client-side routes
+    // 2. SPA fallback — index.html for client-side routes
     const root = join(workspace.volume_name, workspace.static_app_path);
     const indexPath = join(root, 'index.html');
     try {
@@ -473,46 +464,7 @@ async function handleAppProxy(c: Context, deps: AppProxyDeps): Promise<Response>
         });
       }
     } catch { /* index.html missing */ }
-
-    return c.json({ error: 'not_found', message: 'No static file or backend matched this path' }, 404);
   }
 
-  // ── Live proxy (container must be running) ────────────────────────────────
-  if (workspace.status !== 'running') {
-    return c.json({ error: 'unavailable', message: 'Application is not running' }, 503);
-  }
-
-  // Parse port mappings
-  const portMappings: { containerPort: number; hostPort: number; url: string }[] = JSON.parse(workspace.port_mappings);
-
-  // Resolve target
-  const target = resolveTarget(c.req.path, workspaceId, portMappings);
-  if (!target) {
-    return c.json({ error: 'no_port', message: 'No exposed port available for this application' }, 502);
-  }
-
-  // Handle /__tela/* reserved endpoints (identity, JWT token, logout)
-  if (target.subpath.startsWith('/__tela/')) {
-    return handleTelaEndpoint(target.subpath, user, workspace, deps);
-  }
-
-  // Build proxy headers with identity injection
-  const headers = buildProxyHeaders(c.req.raw.headers, user);
-
-  // Forward query string
-  const url = new URL(c.req.url);
-  const queryString = url.search;
-  const targetUrl = `http://127.0.0.1:${target.hostPort}${target.subpath}${queryString}`;
-
-  // Audit log (fire and forget)
-  try {
-    deps.db.logAudit(
-      null,
-      'app_proxy_access',
-      { user_id: user.id, workspace_id: workspaceId, path: target.subpath, method: c.req.method },
-      'app-proxy',
-    );
-  } catch { /* non-critical */ }
-
-  return proxyRequest(c.req.raw, targetUrl, headers);
+  return c.json({ error: 'no_port', message: 'No exposed port available for this application' }, 502);
 }
