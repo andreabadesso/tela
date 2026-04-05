@@ -13,6 +13,10 @@ services:
     depends_on:
       chromadb:
         condition: service_healthy
+      tela-git:
+        condition: service_started
+    networks:
+      - tela
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
@@ -32,9 +36,25 @@ services:
       timeout: 5s
       retries: 3
 
+  tela-git:
+    build: ./docker/git-server
+    container_name: tela-git
+    volumes:
+      - tela_git_repos:/repos
+    ports:
+      - "${GIT_SERVER_PORT:-3500}:3500"
+    restart: unless-stopped
+    networks:
+      - tela
+
+networks:
+  tela:
+    driver: bridge
+
 volumes:
   vault-data:
   ssh-keys:
   agent-db:
   transcripts:
   chroma-data:
+  tela_git_repos:

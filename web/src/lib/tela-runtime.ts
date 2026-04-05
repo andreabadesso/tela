@@ -126,26 +126,36 @@ async function* streamChat(
   }
 }
 
+const PAGE_SIZE = 100;
+
 export function useTelaRuntime(agentId?: string, threadId?: string | null) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [currentThreadId, setCurrentThreadId] = useState<string | null>(threadId ?? null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const threadIdRef = useRef<string | null>(currentThreadId);
   const abortRef = useRef<AbortController | null>(null);
+  // Tracks threads created in this session — don't reload from DB when we just created them
+  const localThreads = useRef<Set<string>>(new Set());
 
   // Keep ref in sync
   useEffect(() => { threadIdRef.current = currentThreadId; }, [currentThreadId]);
 
-  // Load existing thread messages
+  // Load existing thread messages (most recent PAGE_SIZE only)
   useEffect(() => {
     if (!threadId) {
       setMessages([]);
       setCurrentThreadId(null);
+      setHasMore(false);
       return;
     }
+    // Don't reload from DB for threads we just created in this session
+    if (localThreads.current.has(threadId)) return;
     setMessages([]);
+    setHasMore(false);
     setCurrentThreadId(threadId);
-    api.getThread(threadId).then((thread) => {
+    api.getThread(threadId, PAGE_SIZE).then((thread) => {
       const loaded: ChatMessage[] = thread.messages.map((m) => ({
         id: m.id,
         role: m.role as 'user' | 'assistant',
@@ -154,10 +164,34 @@ export function useTelaRuntime(agentId?: string, threadId?: string | null) {
         timestamp: new Date(m.created_at),
       }));
       setMessages(loaded);
+      setHasMore((thread.totalCount ?? 0) > loaded.length);
     }).catch(() => {
       setMessages([]);
     });
   }, [threadId]);
+
+  // Load earlier messages (prepend before the oldest currently loaded)
+  const loadMore = useCallback(async () => {
+    const tid = threadIdRef.current;
+    if (!tid || loadingMore) return;
+    const oldestId = messages[0]?.id;
+    if (!oldestId) return;
+    setLoadingMore(true);
+    try {
+      const thread = await api.getThread(tid, PAGE_SIZE, oldestId);
+      const loaded: ChatMessage[] = thread.messages.map((m) => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        toolCalls: m.tool_calls ? JSON.parse(m.tool_calls) : undefined,
+        timestamp: new Date(m.created_at),
+      }));
+      setMessages((prev) => [...loaded, ...prev]);
+      setHasMore(loaded.length === PAGE_SIZE);
+    } catch { /* ignore */ } finally {
+      setLoadingMore(false);
+    }
+  }, [messages, loadingMore]);
 
   const onNew = useCallback(
     async (message: AppendMessage) => {
@@ -173,6 +207,7 @@ export function useTelaRuntime(agentId?: string, threadId?: string | null) {
         try {
           const thread = await api.createThread(effectiveAgentId, title);
           tid = thread.id;
+          localThreads.current.add(tid);
           setCurrentThreadId(tid);
           threadIdRef.current = tid;
           window.history.replaceState(null, '', `#/chat/${tid}`);
@@ -252,11 +287,11 @@ export function useTelaRuntime(agentId?: string, threadId?: string | null) {
             case 'result': {
               fullText = parsed.text ?? fullText;
               setMessages((prev) =>
-                prev.map((m) => m.id === assistantId ? { ...m, content: fullText, status: undefined } : m)
+                prev.map((m) => m.id === assistantId ? { ...m, content: fullText, toolCalls: [...toolCalls!], status: undefined } : m)
               );
-              // Persist assistant response
-              if (tid && fullText) {
-                api.addMessage(tid, 'assistant', fullText).catch(() => {});
+              // Persist assistant response with tool calls
+              if (tid) {
+                api.addMessage(tid, 'assistant', fullText, toolCalls!.length ? toolCalls : undefined).catch(() => {});
               }
               break;
             }
@@ -304,5 +339,5 @@ export function useTelaRuntime(agentId?: string, threadId?: string | null) {
     onCancel,
   });
 
-  return { runtime, currentThreadId };
+  return { runtime, currentThreadId, hasMore, loadMore, loadingMore };
 }

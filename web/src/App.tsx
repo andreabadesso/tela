@@ -11,6 +11,9 @@ import { Knowledge } from '@/pages/Knowledge';
 import { KnowledgeAdd } from '@/pages/KnowledgeAdd';
 import { KnowledgeDetail } from '@/pages/KnowledgeDetail';
 import { Schedules } from '@/pages/Schedules';
+import { Services } from '@/pages/Services';
+import { Projects } from '@/pages/Projects';
+import { ProjectChat } from '@/pages/ProjectChat';
 import { AuditLog } from '@/pages/AuditLog';
 import { Settings } from '@/pages/Settings';
 import { Login } from '@/pages/Login';
@@ -106,6 +109,11 @@ function App() {
     page = <Chat initialThreadId={chatThreadMatch[1]} />;
   }
 
+  const projectChatMatch = !page && hash.match(/^#\/projects\/(.+)$/);
+  if (projectChatMatch) {
+    page = <ProjectChat projectId={projectChatMatch[1]} />;
+  }
+
   if (hash === '#/knowledge/add') {
     page = <KnowledgeAdd />;
   }
@@ -116,6 +124,9 @@ function App() {
   }
 
   if (!page) switch (hash) {
+    case '#/projects':
+      page = <Projects />;
+      break;
     case '#/agents':
       page = <Agents />;
       break;
@@ -130,6 +141,9 @@ function App() {
       break;
     case '#/schedules':
       page = <Schedules />;
+      break;
+    case '#/services':
+      page = <Services />;
       break;
     case '#/knowledge':
       page = <Knowledge />;

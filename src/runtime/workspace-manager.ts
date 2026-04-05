@@ -1,4 +1,8 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { DatabaseService } from '../core/database.js';
+import type { EncryptionService } from '../core/encryption.js';
 import type { PortProxyManager } from './port-proxy.js';
 import { config } from '../config/env.js';
 
@@ -12,6 +16,11 @@ export interface WorkspaceRow {
   port_mappings: string; // JSON
   insforge_project_id: string | null;
   disk_usage_mb: number;
+  owner_id: string | null;
+  visibility: 'private' | 'team' | 'public';
+  team_id: string | null;
+  jwt_secret: string | null;
+  static_app_path: string | null; // relative path inside volume_name to serve as static site
   created_at: string;
   updated_at: string;
   last_active_at: string | null;
@@ -42,6 +51,7 @@ export class WorkspaceManager {
     private db: DatabaseService,
     private portProxy: PortProxyManager,
     private config: DevContainerConfig = {},
+    private encryption?: EncryptionService,
   ) {}
 
   private async getDocker() {
@@ -54,21 +64,32 @@ export class WorkspaceManager {
   }
 
   /**
-   * Create a new workspace: Docker volume + DB record.
+   * Create a new workspace: host directory (bind mount) + DB record.
    * Does NOT start a container — call `start()` for that.
+   *
+   * Uses bind mounts instead of Docker volumes so the host can access workspace files.
+   * This is critical for InsForge deployments — `create-deployment` reads from the host filesystem.
    */
-  async create(name: string, agentId: string): Promise<WorkspaceRow> {
-    const docker = await this.getDocker();
+  async create(name: string, agentId: string, ownerId?: string): Promise<WorkspaceRow> {
     const id = crypto.randomUUID();
-    const volumeName = `tela-workspace-${id.slice(0, 8)}`;
+    const shortId = id.slice(0, 8);
 
-    // Create Docker volume
-    await docker.createVolume({ Name: volumeName });
+    // Create host directory for bind mount (instead of Docker volume)
+    const hostDir = path.resolve(config.workspacesPath, shortId);
+    fs.mkdirSync(hostDir, { recursive: true });
 
-    // Insert DB record
-    this.db.createWorkspace({ id, name, agent_id: agentId, volume_name: volumeName });
+    // Generate per-workspace JWT secret (for /__tela/token endpoint)
+    const jwtSecretRaw = crypto.randomBytes(32).toString('hex');
+    const jwtSecret = this.encryption ? this.encryption.encrypt(jwtSecretRaw) : jwtSecretRaw;
 
-    console.log(`[workspace] Created ${name} (${id.slice(0, 8)}, volume: ${volumeName})`);
+    // Insert DB record — volume_name stores the host path for bind mount
+    this.db.createWorkspace({
+      id, name, agent_id: agentId, volume_name: hostDir,
+      owner_id: ownerId ?? null,
+      jwt_secret: jwtSecret,
+    });
+
+    console.log(`[workspace] Created ${name} (${shortId}, path: ${hostDir}, owner: ${ownerId ?? 'none'})`);
     return this.db.getWorkspace(id)!;
   }
 
@@ -231,10 +252,9 @@ export class WorkspaceManager {
       } catch { /* already gone */ }
     }
 
-    // Remove volume
+    // Remove workspace directory from host
     try {
-      const volume = docker.getVolume(ws.volume_name);
-      await volume.remove();
+      fs.rmSync(ws.volume_name, { recursive: true, force: true });
     } catch { /* already gone */ }
 
     this.db.updateWorkspace(workspaceId, { status: 'destroyed', container_id: null as any, port_mappings: '[]' });
@@ -243,7 +263,7 @@ export class WorkspaceManager {
 
   /**
    * Expose a container port through the port proxy.
-   * Returns the external URL accessible from the host.
+   * Returns the proxy URL (routed through /apps/{workspaceId} with auth).
    */
   async exposePort(workspaceId: string, containerPort: number): Promise<{ hostPort: number; url: string }> {
     const docker = await this.getDocker();
@@ -267,7 +287,7 @@ export class WorkspaceManager {
 
     const dockerHostPort = parseInt(bindings[0].HostPort, 10);
 
-    // Create TCP proxy
+    // Create internal TCP proxy (bound to 127.0.0.1 only)
     const mapping = await this.portProxy.allocate(ws.container_id, containerPort, dockerHostPort);
 
     // Update DB
@@ -275,7 +295,11 @@ export class WorkspaceManager {
     currentMappings.push({ containerPort, hostPort: mapping.hostPort, url: mapping.url });
     this.db.updateWorkspace(workspaceId, { port_mappings: JSON.stringify(currentMappings) });
 
-    return { hostPort: mapping.hostPort, url: mapping.url };
+    // Return the RBAC-protected proxy URL instead of the raw TCP port
+    const baseUrl = process.env.BASE_URL || `http://localhost:${config.port}`;
+    const proxyUrl = `${baseUrl}/apps/${workspaceId}`;
+
+    return { hostPort: mapping.hostPort, url: proxyUrl };
   }
 
   /** Get all port mappings for a workspace. */
@@ -286,13 +310,62 @@ export class WorkspaceManager {
   }
 
   /** Find or create a workspace for an agent. Reuses existing running/paused workspace if available. */
-  async getOrCreate(agentId: string, name?: string): Promise<WorkspaceRow> {
+  async getOrCreate(agentId: string, name?: string, ownerId?: string): Promise<WorkspaceRow> {
     // Look for an existing non-destroyed workspace for this agent
     const existing = this.db.getWorkspaces(agentId);
     const reusable = existing.find(w => w.status === 'running' || w.status === 'paused' || w.status === 'created');
     if (reusable) return reusable;
 
     // Create a new one
-    return this.create(name ?? `workspace-${agentId.slice(0, 8)}`, agentId);
+    return this.create(name ?? `workspace-${agentId.slice(0, 8)}`, agentId, ownerId);
+  }
+
+  /**
+   * Register a built frontend directory as the static app for this workspace.
+   * The path is relative to /workspace inside the container (= relative to volume_name on host).
+   * Once set, the app proxy serves files directly from disk — no running container needed.
+   */
+  setStaticApp(workspaceId: string, relativePath: string): string {
+    const ws = this.db.getWorkspace(workspaceId);
+    if (!ws) throw new Error(`Workspace not found: ${workspaceId}`);
+    if (ws.status === 'destroyed') throw new Error(`Workspace is destroyed: ${workspaceId}`);
+
+    // Sanitize: strip leading /workspace/ or / prefix
+    const clean = relativePath.replace(/^\/workspace\//, '').replace(/^\//, '');
+    this.db.updateWorkspace(workspaceId, { static_app_path: clean });
+
+    const baseUrl = process.env.BASE_URL || `http://localhost:${config.port}`;
+    return `${baseUrl}/apps/${workspaceId}`;
+  }
+
+  /**
+   * Attach a session container to a workspace so that `exposePort` can work
+   * and the app proxy knows to do live proxying.
+   * Called when a project-session container starts.
+   */
+  async attachSessionContainer(workspaceId: string, containerId: string): Promise<void> {
+    this.db.updateWorkspace(workspaceId, { container_id: containerId, status: 'running' });
+    console.log(`[workspace] Attached session container ${containerId.slice(0, 12)} to workspace ${workspaceId}`);
+  }
+
+  /**
+   * Detach a session container from a workspace: release all port proxies,
+   * clear container_id, reset status to 'created', and clear port_mappings.
+   * Called in the finally block of a project session before the container is destroyed.
+   */
+  async detachSessionContainer(workspaceId: string, containerId: string): Promise<void> {
+    await this.portProxy.releaseAll(containerId);
+    this.db.updateWorkspace(workspaceId, {
+      container_id: null as any,
+      status: 'created',
+      port_mappings: '[]',
+    });
+    console.log(`[workspace] Detached session container ${containerId.slice(0, 12)} from workspace ${workspaceId}`);
+  }
+
+  /** Decrypt the per-workspace JWT secret. Returns raw hex string. */
+  decryptJwtSecret(workspace: WorkspaceRow): string | null {
+    if (!workspace.jwt_secret) return null;
+    return this.encryption ? this.encryption.decrypt(workspace.jwt_secret) : workspace.jwt_secret;
   }
 }

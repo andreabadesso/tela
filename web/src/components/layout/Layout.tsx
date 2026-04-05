@@ -6,6 +6,7 @@ import {
   Plug,
   Radio,
   Clock,
+  Server,
   BookOpen,
   ScrollText,
   Settings,
@@ -15,6 +16,7 @@ import {
   Users,
   ShieldCheck,
   UserCog,
+  Layers,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -31,10 +33,12 @@ interface NavItem {
 const navItems: NavItem[] = [
   { icon: <MessageSquare className="h-4 w-4" />, label: 'Chat', hash: '#/' },
   { icon: <Bot className="h-4 w-4" />, label: 'Agents', hash: '#/agents' },
+  { icon: <Layers className="h-4 w-4" />, label: 'Projects', hash: '#/projects' },
   { icon: <Plug className="h-4 w-4" />, label: 'My Connections', hash: '#/my-connections' },
   { icon: <Radio className="h-4 w-4" />, label: 'Channels', hash: '#/channels' },
   { icon: <Link2 className="h-4 w-4" />, label: 'Connections', hash: '#/connections' },
   { icon: <Clock className="h-4 w-4" />, label: 'Schedules', hash: '#/schedules' },
+  { icon: <Server className="h-4 w-4" />, label: 'Services', hash: '#/services' },
   { icon: <BookOpen className="h-4 w-4" />, label: 'Knowledge', hash: '#/knowledge' },
   { icon: <ScrollText className="h-4 w-4" />, label: 'Audit Log', hash: '#/audit' },
   { icon: <Settings className="h-4 w-4" />, label: 'Settings', hash: '#/settings' },

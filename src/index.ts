@@ -8,6 +8,8 @@ import { AgentService } from './agent/service.js';
 import { JobRegistry } from './jobs/registry.js';
 import { startApiServer } from './api/server.js';
 import { createRuntimeRegistry } from './runtime/index.js';
+import { GitService } from './services/git-service.js';
+import { ProjectSessionRuntime } from './runtime/project-session.js';
 
 // Optional Phase 2-4 services
 import { GoogleAuthService } from './integrations/google-auth.js';
@@ -129,7 +131,36 @@ async function main() {
   const runtimeRegistry = createRuntimeRegistry(agentService, db, {
     image: config.agentDockerImage,
     hostCallbackPort: config.port,
-  }, devContainerConfig);
+  }, devContainerConfig, encryption);
+
+  // Wire workspace manager into agent service so container agents can expose ports
+  const devRuntime = runtimeRegistry.get('devcontainer') as import('./runtime/devcontainer.js').DevContainerRuntime | undefined;
+  if (devRuntime?.workspaceManager) {
+    agentService.setWorkspaceDeps(devRuntime.workspaceManager);
+    console.log('[init] Workspace tools wired into agent service.');
+  }
+
+  // Git service for project repos
+  const gitService = new GitService();
+  console.log('[init] Git service ready.');
+
+  // Project session runtime (ephemeral containers for App Builder)
+  const projectSessionRuntime = config.devContainerEnabled
+    ? new ProjectSessionRuntime(agentService, db, gitService, {
+        image: config.devContainerImage,
+        hostCallbackPort: config.port,
+        defaultMemoryMb: config.devContainerMemoryMb,
+        defaultTimeoutMs: config.devContainerTimeoutMs,
+      }, encryption, devRuntime?.workspaceManager)
+    : undefined;
+
+  if (projectSessionRuntime) {
+    // Clean up orphan session containers from previous crash
+    projectSessionRuntime.cleanupOrphanSessions().catch(err =>
+      console.warn('[init] Orphan session cleanup failed:', err)
+    );
+    console.log('[init] Project session runtime ready.');
+  }
 
   // Multi-agent orchestrator
   const orchestrator = new Orchestrator(db, agentService, runtimeRegistry);
@@ -158,7 +189,13 @@ async function main() {
   await jobRegistry.loadSchedulesFromDb(db, agentService);
   jobRegistry.start();
 
-  const apiServer = startApiServer({ agentService, orchestrator, db, gitSync, jobRegistry, knowledgeManager, notificationManager, auth, mcpGateway, runtimeRegistry, channelGateway });
+  const apiServer = startApiServer({
+    agentService, orchestrator, db, gitSync, jobRegistry, knowledgeManager,
+    notificationManager, auth, mcpGateway, runtimeRegistry, channelGateway, encryption,
+    gitService,
+    projectSessionRuntime,
+    workspaceManager: devRuntime?.workspaceManager,
+  });
 
   console.log(`[${new Date().toISOString()}] Tela running. All phases loaded.`);
 

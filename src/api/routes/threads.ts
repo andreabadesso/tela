@@ -22,8 +22,14 @@ export function threadRoutes(deps: { db: DatabaseService }) {
     if (!user) return c.json({ error: 'Unauthorized' }, 401);
     const thread = deps.db.getChatThread(c.req.param('id'));
     if (!thread || thread.user_id !== user.id) return c.json({ error: 'Not found' }, 404);
-    const messages = deps.db.getChatMessages(thread.id);
-    return c.json({ ...thread, messages });
+    const limitParam = c.req.query('limit');
+    const before = c.req.query('before') || undefined;
+    const limit = limitParam ? parseInt(limitParam, 10) : undefined;
+    const messages = deps.db.getChatMessages(thread.id, limit, before);
+    const totalCount = limit
+      ? (deps.db as any).db.prepare('SELECT COUNT(*) as n FROM chat_messages WHERE thread_id = ?').get(thread.id)?.n ?? 0
+      : messages.length;
+    return c.json({ ...thread, messages, totalCount });
   });
 
   // Create a new thread

@@ -75,8 +75,21 @@ export const config = {
   a2aEnabled: (optionalEnv('A2A_ENABLED') ?? 'true') === 'true',
   a2aBaseUrl: optionalEnv('A2A_BASE_URL'),
 
+  // Workspace host path — bind mount base directory for workspace files
+  // When set, workspaces use bind mounts instead of Docker volumes so the host can access files
+  // (required for InsForge deployments — create-deployment reads from the host filesystem)
+  workspacesPath: optionalEnv('WORKSPACES_PATH') || './workspaces',
+
   // Phase 10 — InsForge BaaS (optional)
   // URL uses host.docker.internal because the coding agent runs inside a Docker container
   insforgeApiUrl: optionalEnv('INSFORGE_API_URL') || 'http://host.docker.internal:7130',
   insforgeApiKey: optionalEnv('INSFORGE_API_KEY'),
+  // Deno runtime URL for edge function execution (separate from management API)
+  insforgeRuntimeUrl: optionalEnv('INSFORGE_RUNTIME_URL') || 'http://host.docker.internal:7133',
+
+  // Phase 8c — Git Server (optional)
+  gitServerUrl: optionalEnv('GIT_SERVER_URL') || 'http://tela-git:3500',
+  gitServerPort: parseInt(process.env.GIT_SERVER_PORT || '3500', 10),
+  gitServerCloneUrl: optionalEnv('GIT_SERVER_CLONE_URL') || 'http://host.docker.internal:3500',
+  gitServerContainerName: optionalEnv('GIT_SERVER_CONTAINER_NAME') || 'tela-git',
 };

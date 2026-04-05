@@ -118,8 +118,16 @@ Production-grade agent execution: streaming tool execution, context compaction, 
 
 Pluggable agent runtimes, containerized execution, and production-grade isolation.
 
+**App Builder sub-system:** non-technical users build internal tools (React + InsForge) via a conversational agent. Each session is an ephemeral container that clones a git repo, does work, and pushes back. The workspace bind mount is the permanent static file store for the live app.
+
 ### Task List
 
 | ID | Title | Deps | Effort | Status |
 |----|-------|------|--------|--------|
 | [070](070.md) | Agent runtime abstraction (pluggable execution backends) | 042, 046 | large | pending |
+| [071](071.md) | Agent memory system | 042, 070 | large | done |
+| [072](072.md) | App proxy: RBAC-controlled access to agent-generated apps | 049, 050, 070 | large | done |
+| [073](073.md) | Local git server (bare repos over HTTP) | 046 | small | pending |
+| [074](074.md) | Projects entity | 073, 072, 049 | medium | pending |
+| [075](075.md) | Ephemeral session runtime | 073, 074, 070 | large | pending |
+| [076](076.md) | App Builder agent type | 073, 074, 075 | medium | pending |

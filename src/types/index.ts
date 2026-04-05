@@ -95,6 +95,7 @@ export interface EodStateRow {
 export interface AgentRow {
   id: string;
   name: string;
+  type?: 'standard' | 'app-builder';
   model: string;
   system_prompt: string;
   mcp_servers: string; // JSON
@@ -366,4 +367,37 @@ export interface AgentBehaviorConfigRow {
   config: string; // JSON
   created_at: string;
   updated_at: string;
+}
+
+export interface ProjectRow {
+  id: string;
+  name: string;
+  description: string | null;
+  stack: string;
+  owner_id: string;
+  team_id: string | null;
+  visibility: 'private' | 'team' | 'public';
+  git_repo_slug: string;
+  workspace_id: string | null;
+  insforge_project_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectSessionRow {
+  id: string;
+  project_id: string;
+  agent_id: string;
+  user_id: string;
+  status: 'pending' | 'running' | 'committed' | 'failed' | 'cancelled';
+  container_id: string | null;
+  commit_sha: string | null;
+  commit_message: string | null;
+  input: string;
+  output: string | null;
+  error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_ms: number | null;
+  created_at: string;
 }

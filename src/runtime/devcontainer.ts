@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { DatabaseService } from '../core/database.js';
+import type { EncryptionService } from '../core/encryption.js';
 import type { AgentService } from '../agent/service.js';
 import type {
   AgentRuntime,
@@ -38,9 +39,10 @@ export class DevContainerRuntime implements AgentRuntime {
     private agentService: AgentService,
     private db: DatabaseService,
     private config: DevContainerConfig = {},
+    encryption?: EncryptionService,
   ) {
     this.portProxy = new PortProxyManager(config.portRange);
-    this.workspaceManager = new WorkspaceManager(db, this.portProxy, config);
+    this.workspaceManager = new WorkspaceManager(db, this.portProxy, config, encryption);
   }
 
   private async getDocker() {
@@ -65,8 +67,8 @@ export class DevContainerRuntime implements AgentRuntime {
       input: JSON.stringify(params.input),
     });
 
-    // Get or create a workspace for this agent
-    const workspace = await this.workspaceManager.getOrCreate(params.agentId);
+    // Get or create a workspace for this agent (owned by the requesting user)
+    const workspace = await this.workspaceManager.getOrCreate(params.agentId, undefined, params.userId);
     const { containerId } = await this.workspaceManager.start(workspace.id);
 
     const abort = new AbortController();
@@ -91,9 +93,22 @@ export class DevContainerRuntime implements AgentRuntime {
       streamNotify?.();
     };
 
+    // Inject workspace context so the agent can use workspace tools (exposePort, etc.)
+    const paramsWithWorkspace: AgentExecutionParams = {
+      ...params,
+      input: {
+        ...params.input,
+        metadata: {
+          ...params.input.metadata,
+          workspaceHostPath: workspace.volume_name,
+          workspaceId: workspace.id,
+        },
+      },
+    };
+
     // Execute agent inside the container using processStream for real-time events
     const resultPromise = this.runStreamingWithTimeout(
-      runId, params, containerId, timeout, abort.signal, pushEvent,
+      runId, paramsWithWorkspace, containerId, timeout, abort.signal, pushEvent,
       () => { streamDone = true; streamNotify?.(); },
     );
     const stream = this.createStream(runId, eventBuffer, () => streamDone, (cb) => { streamNotify = cb; });

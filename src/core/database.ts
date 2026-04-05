@@ -29,6 +29,8 @@ import type {
   McpToolClassificationRow,
   AgentMemoryRow,
   AgentBehaviorConfigRow,
+  ProjectRow,
+  ProjectSessionRow,
 } from '../types/index.js';
 import type { AgentRunRow } from '../types/runtime.js';
 import type { A2ATaskRow, A2APushConfigRow } from '../a2a/types.js';
@@ -530,7 +532,16 @@ export class DatabaseService {
     return result.changes > 0;
   }
 
-  getChatMessages(threadId: string): { id: string; thread_id: string; role: string; content: string; tool_calls: string | null; created_at: string }[] {
+  getChatMessages(threadId: string, limit?: number, before?: string): { id: string; thread_id: string; role: string; content: string; tool_calls: string | null; created_at: string }[] {
+    if (limit) {
+      const cursor = before
+        ? (this.db.prepare('SELECT created_at FROM chat_messages WHERE id = ?').get(before) as any)?.created_at
+        : null;
+      const rows = cursor
+        ? this.db.prepare('SELECT * FROM chat_messages WHERE thread_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?').all(threadId, cursor, limit) as any[]
+        : this.db.prepare('SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT ?').all(threadId, limit) as any[];
+      return rows.reverse();
+    }
     return this.db.prepare('SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY created_at ASC').all(threadId) as any[];
   }
 
@@ -1596,11 +1607,11 @@ export class DatabaseService {
 
   // ─── Workspaces ──────────────────────────────────────────────
 
-  createWorkspace(data: { id: string; name: string; agent_id: string; volume_name: string }): WorkspaceRow {
+  createWorkspace(data: { id: string; name: string; agent_id: string; volume_name: string; owner_id?: string | null; jwt_secret?: string | null }): WorkspaceRow {
     this.db.prepare(`
-      INSERT INTO workspaces (id, name, agent_id, volume_name, status)
-      VALUES (?, ?, ?, ?, 'created')
-    `).run(data.id, data.name, data.agent_id, data.volume_name);
+      INSERT INTO workspaces (id, name, agent_id, volume_name, status, owner_id, jwt_secret)
+      VALUES (?, ?, ?, ?, 'created', ?, ?)
+    `).run(data.id, data.name, data.agent_id, data.volume_name, data.owner_id ?? null, data.jwt_secret ?? null);
     return this.getWorkspace(data.id)!;
   }
 
@@ -1621,7 +1632,7 @@ export class DatabaseService {
       .all() as WorkspaceRow[];
   }
 
-  updateWorkspace(id: string, data: Partial<Pick<WorkspaceRow, 'container_id' | 'status' | 'port_mappings' | 'insforge_project_id' | 'disk_usage_mb'>>): WorkspaceRow | undefined {
+  updateWorkspace(id: string, data: Partial<Pick<WorkspaceRow, 'container_id' | 'status' | 'port_mappings' | 'insforge_project_id' | 'disk_usage_mb' | 'visibility' | 'team_id' | 'static_app_path'>>): WorkspaceRow | undefined {
     const fields: string[] = [];
     const values: unknown[] = [];
     for (const [key, val] of Object.entries(data)) {
@@ -1639,6 +1650,119 @@ export class DatabaseService {
     this.db.prepare("UPDATE workspaces SET last_active_at = datetime('now') WHERE id = ?").run(id);
   }
 
+  // ─── Projects ──────────────────────────────────────────────────
+
+  createProject(data: {
+    id: string;
+    name: string;
+    description?: string | null;
+    owner_id: string;
+    team_id?: string | null;
+    git_repo_slug: string;
+    workspace_id?: string | null;
+    insforge_project_id?: string | null;
+  }): ProjectRow {
+    this.db.prepare(`
+      INSERT INTO projects (id, name, description, owner_id, team_id, git_repo_slug, workspace_id, insforge_project_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      data.id, data.name, data.description ?? null, data.owner_id,
+      data.team_id ?? null, data.git_repo_slug, data.workspace_id ?? null,
+      data.insforge_project_id ?? null,
+    );
+    return this.getProject(data.id)!;
+  }
+
+  getProject(id: string): ProjectRow | undefined {
+    return this.db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined;
+  }
+
+  getProjectBySlug(slug: string): ProjectRow | undefined {
+    return this.db.prepare('SELECT * FROM projects WHERE git_repo_slug = ?').get(slug) as ProjectRow | undefined;
+  }
+
+  listProjects(userId: string, userTeams: string[], isAdmin: boolean): ProjectRow[] {
+    if (isAdmin) {
+      return this.db.prepare('SELECT * FROM projects ORDER BY created_at DESC').all() as ProjectRow[];
+    }
+    // Own + team + public
+    const teamPlaceholders = userTeams.length > 0
+      ? `OR (visibility = 'team' AND team_id IN (${userTeams.map(() => '?').join(',')}))`
+      : '';
+    const sql = `
+      SELECT * FROM projects
+      WHERE owner_id = ?
+         OR visibility = 'public'
+         ${teamPlaceholders}
+      ORDER BY created_at DESC
+    `;
+    return this.db.prepare(sql).all(userId, ...userTeams) as ProjectRow[];
+  }
+
+  updateProject(id: string, data: Partial<Pick<ProjectRow, 'name' | 'description' | 'visibility' | 'team_id' | 'workspace_id' | 'insforge_project_id'>>): ProjectRow | undefined {
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, val] of Object.entries(data)) {
+      fields.push(`${key} = ?`);
+      values.push(val);
+    }
+    if (fields.length === 0) return this.getProject(id);
+    fields.push("updated_at = datetime('now')");
+    values.push(id);
+    this.db.prepare(`UPDATE projects SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    return this.getProject(id);
+  }
+
+  deleteProject(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+    return result.changes > 0;
+  }
+
+  // ─── Project Sessions ──────────────────────────────────────────
+
+  createProjectSession(data: {
+    id: string;
+    project_id: string;
+    agent_id: string;
+    user_id: string;
+    input: string;
+  }): ProjectSessionRow {
+    this.db.prepare(`
+      INSERT INTO project_sessions (id, project_id, agent_id, user_id, input)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(data.id, data.project_id, data.agent_id, data.user_id, data.input);
+    return this.getProjectSession(data.id)!;
+  }
+
+  getProjectSession(id: string): ProjectSessionRow | undefined {
+    return this.db.prepare('SELECT * FROM project_sessions WHERE id = ?').get(id) as ProjectSessionRow | undefined;
+  }
+
+  listProjectSessions(projectId: string, limit = 50): ProjectSessionRow[] {
+    return this.db.prepare(
+      'SELECT * FROM project_sessions WHERE project_id = ? ORDER BY created_at DESC LIMIT ?'
+    ).all(projectId, limit) as ProjectSessionRow[];
+  }
+
+  updateProjectSession(id: string, data: Partial<Pick<ProjectSessionRow, 'status' | 'container_id' | 'commit_sha' | 'commit_message' | 'output' | 'error' | 'started_at' | 'completed_at' | 'duration_ms'>>): ProjectSessionRow | undefined {
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, val] of Object.entries(data)) {
+      fields.push(`${key} = ?`);
+      values.push(val);
+    }
+    if (fields.length === 0) return this.getProjectSession(id);
+    values.push(id);
+    this.db.prepare(`UPDATE project_sessions SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    return this.getProjectSession(id);
+  }
+
+  getActiveSessionForProject(projectId: string): ProjectSessionRow | undefined {
+    return this.db.prepare(
+      "SELECT * FROM project_sessions WHERE project_id = ? AND status IN ('pending', 'running') LIMIT 1"
+    ).get(projectId) as ProjectSessionRow | undefined;
+  }
+
   // ─── Utilities ─────────────────────────────────────────────────
 
   close(): void {
@@ -1648,16 +1772,23 @@ export class DatabaseService {
 
 // ─── Coding Agent System Prompt ───────────────────────────────
 
-const CODING_AGENT_SYSTEM_PROMPT = `You are a coding agent that builds complete web applications and services from scratch. You run inside a persistent Docker workspace at /workspace with full terminal, filesystem, and network access.
+const CODING_AGENT_SYSTEM_PROMPT = `You are a coding agent that builds complete web applications and services from scratch. You run inside a persistent Docker workspace with full terminal, filesystem, and network access.
+
+## CRITICAL RULES — Read these first
+1. **ALL projects MUST live in /workspace** — this is a persistent Docker volume. NEVER create projects in /home, /tmp, or anywhere else. Only /workspace survives restarts and is accessible to deployment tools.
+2. **NEVER use curl, wget, or fetch() to interact with InsForge** — always use the MCP tools listed below. They handle auth, host resolution, and error handling for you.
+3. **NEVER use ToolSearch to find InsForge tools** — they are already loaded and available. Just call them directly by name (e.g., \`mcp__insforge__run-raw-sql\`).
+4. **NEVER build standalone backends** — no SQLite, Express, Hono, or custom API servers. InsForge provides everything.
 
 ## Your environment
 - You are Claude Code running inside a Docker container
 - All your built-in tools (Bash, Write, Read, Edit, Glob, Grep) work normally — they execute inside the container
 - Your workspace at /workspace persists between conversations
 - Pre-installed: Node.js 22, pnpm, git, python3, curl, ripgrep, jq
+- Exposed container ports: 3000, 3001, 4000, 5173, 8000, 8080
 
 ## InsForge — Your Backend Infrastructure
-You have InsForge, an open-source BaaS (like Supabase), available via MCP tools. **Always use InsForge for backend needs** — never build standalone API servers or databases.
+You have InsForge, an open-source BaaS (like Supabase), available via MCP tools. **Always use InsForge for backend needs.**
 
 InsForge provides:
 - **Database**: Postgres — create tables with \`run-raw-sql\`, query via PostgREST REST API
@@ -1665,53 +1796,72 @@ InsForge provides:
 - **Storage**: File/blob storage with access control via \`create-bucket\`, \`list-buckets\`
 - **Edge Functions**: Serverless TypeScript (Deno) functions via \`create-function\`, \`update-function\`
 - **Realtime**: WebSocket subscriptions for live database changes
+- **Deployment**: Deploy frontend apps to InsForge hosting via \`create-deployment\`
 
-### How to use InsForge
-- **MCP tools**: Call InsForge tools directly by name — do NOT use ToolSearch to find them. They are already loaded.
-  - \`mcp__insforge__run-raw-sql\` — execute SQL on Postgres (e.g., CREATE TABLE, INSERT, SELECT)
-  - \`mcp__insforge__get-anon-key\` — get the anonymous JWT for frontend client auth
-  - \`mcp__insforge__get-table-schema\` — inspect table schema
-  - \`mcp__insforge__create-function\` — create Deno edge functions
-  - \`mcp__insforge__update-function\` — update edge functions
-  - \`mcp__insforge__get-function\` — get edge function details
-  - \`mcp__insforge__delete-function\` — delete edge function
-  - \`mcp__insforge__create-bucket\` — create storage bucket
-  - \`mcp__insforge__list-buckets\` — list storage buckets
-  - \`mcp__insforge__delete-bucket\` — delete storage bucket
-  - \`mcp__insforge__get-backend-metadata\` — get InsForge backend info
-  - \`mcp__insforge__fetch-docs\` — fetch InsForge documentation
-  - \`mcp__insforge__get-container-logs\` — debug InsForge services
-  - \`mcp__insforge__bulk-upsert\` — bulk import data from CSV/JSON
-  - \`mcp__insforge__create-deployment\` — deploy frontend apps
-- **PostgREST API**: \`http://host.docker.internal:5430/TABLE_NAME\` — auto-generated REST from your Postgres tables. Use \`get-anon-key\` for the auth token.
+### InsForge MCP tools — call these directly by name
+- \`mcp__insforge__run-raw-sql\` — execute SQL on Postgres (CREATE TABLE, INSERT, SELECT, etc.)
+- \`mcp__insforge__get-anon-key\` — get the anonymous JWT for frontend client auth
+- \`mcp__insforge__get-table-schema\` — inspect table schema
+- \`mcp__insforge__get-backend-metadata\` — get InsForge backend info (URLs, version, etc.)
+- \`mcp__insforge__create-function\` — create Deno edge functions
+- \`mcp__insforge__update-function\` — update edge functions
+- \`mcp__insforge__get-function\` — get edge function details
+- \`mcp__insforge__delete-function\` — delete edge function
+- \`mcp__insforge__create-bucket\` — create storage bucket
+- \`mcp__insforge__list-buckets\` — list storage buckets
+- \`mcp__insforge__delete-bucket\` — delete storage bucket
+- \`mcp__insforge__fetch-docs\` — fetch InsForge documentation
+- \`mcp__insforge__fetch-sdk-docs\` — fetch SDK documentation for a specific feature
+- \`mcp__insforge__get-container-logs\` — debug InsForge services
+- \`mcp__insforge__bulk-upsert\` — bulk import data from CSV/JSON
+- \`mcp__insforge__create-deployment\` — deploy a frontend app (reads from /workspace paths)
+- \`mcp__insforge__download-template\` — download project templates
+
+### Connecting frontends to InsForge
+- **PostgREST API**: \`http://host.docker.internal:5430/TABLE_NAME\` — auto-generated REST from your Postgres tables
 - **JS client**: \`npm install @insforge/sdk\` then \`import { createClient } from '@insforge/sdk'\`
-- **Anon key**: Use \`mcp__insforge__get-anon-key\` MCP tool to get the client key for frontend apps
-- **InsForge API**: \`http://host.docker.internal:7130\` — management API (NOT for data queries)
+- **Anon key**: Use \`mcp__insforge__get-anon-key\` to get the client key for frontend auth headers
+- **Edge functions**: \`http://host.docker.internal:7133/FUNCTION_SLUG\`
 
-### IMPORTANT: No standalone backends
-- **NEVER** use SQLite, better-sqlite3, JSON files, Express, Hono, or any standalone database/API server
-- **NEVER** write your own \`server.js\` or API layer — PostgREST at \`host.docker.internal:5430\` already gives you full CRUD REST APIs for any table you create
-- Create tables with \`run-raw-sql\` MCP tool, then query them via PostgREST or the JS SDK
-- For custom business logic beyond CRUD, use InsForge edge functions (\`create-function\` MCP tool)
-- The frontend connects to InsForge directly — no middle layer
-
-### Deployment architecture
-- **Backend**: InsForge handles it — tables via SQL, custom logic via edge functions, auth built-in
-- **Frontend**: Build static files (\`npm run build\`), then serve the \`dist/\` folder. Use \`npx serve dist -p 5173\` for production-like serving
+### No standalone backends
+- PostgREST at \`host.docker.internal:5430\` already gives you full CRUD REST APIs for any table
+- For custom business logic beyond CRUD, use InsForge edge functions (\`create-function\`)
+- The frontend connects to InsForge directly — no middle layer needed
 
 ## How to work
 1. **Understand the request** — ask clarifying questions if needed
-2. **Set up the backend** — create InsForge tables (\`run-raw-sql\`), edge functions, and storage buckets as needed
-3. **Build the frontend** — scaffold with Vite, install @insforge/sdk, connect to InsForge
-4. **Build & test** — run build, verify the app works
-5. **Start serving** — serve the built frontend (\`npx serve dist -p 5173 &\`)
-6. **Report back** — share what was built, the InsForge tables created, and the frontend URL
+2. **Set up the backend** — create InsForge tables (\`run-raw-sql\`), edge functions, and storage buckets using MCP tools
+3. **Build the frontend** — scaffold with Vite in /workspace, install @insforge/sdk, connect to InsForge
+4. **Build & test** — run \`npm run build\`, verify the app works
+5. **Deploy** — use \`mcp__insforge__create-deployment\` with the project's /workspace path
+6. **Report back** — share what was built, the InsForge resources created, and any deployment URLs
+
+### Deployment workflow
+To deploy a frontend app:
+1. Make sure the project is in /workspace (e.g., /workspace/my-app)
+2. Run \`npm run build\` to verify the build succeeds
+3. Call \`mcp__insforge__create-deployment\` with \`sourceDirectory\` set to the project root in /workspace (e.g., "/workspace/my-app")
+4. The deployment tool handles building, uploading, and hosting automatically
+
+## Authentication — Tela handles it
+**NEVER implement authentication or login flows.** Tela provides auth automatically via a reverse proxy.
+
+- **Get current user**: \`fetch('/__tela/me')\` returns \`{ id, email, name, roles, teams }\`
+- **Get Supabase/InsForge auth token**: \`fetch('/__tela/token')\` returns \`{ token, expires_at }\` — use as Bearer token for InsForge client
+- **Backend requests** automatically receive \`X-Tela-User-Id\`, \`X-Tela-User-Email\`, \`X-Tela-User-Roles\` headers
+
+### Per-user data scoping
+When tables store per-user data, always:
+1. Add a \`user_id TEXT\` column
+2. Enable Row Level Security (RLS) with \`auth.uid()\` policies:
+\`\`\`sql
+ALTER TABLE my_table ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users see own data" ON my_table FOR ALL USING (user_id = auth.uid());
+\`\`\`
 
 ## Guidelines
-- Always use InsForge for data persistence, auth, and file storage — never SQLite, JSON files, or standalone Express/Hono APIs
-- Use the InsForge MCP tools (run-raw-sql, get-anon-key, create-function, etc.) — do NOT use curl to interact with InsForge
 - Use TypeScript when the user doesn't specify a language
 - For React apps, prefer Vite + React + TypeScript + Tailwind CSS
 - Always initialize git and commit after major milestones
 - Always test your code compiles/runs before reporting completion
-- Exposed container ports: 3000, 3001, 4000, 5173, 8000, 8080`;
+- For development preview, use \`npx serve dist -p 5173 &\` to serve built files`;

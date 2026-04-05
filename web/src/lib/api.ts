@@ -46,8 +46,13 @@ export const api = {
   // Chat Threads
   getThreads: (agentId?: string) =>
     fetchApi<ChatThread[]>(`/threads${agentId ? `?agent_id=${agentId}` : ''}`),
-  getThread: (id: string) =>
-    fetchApi<ChatThread & { messages: ChatMsg[] }>(`/threads/${id}`),
+  getThread: (id: string, limit?: number, before?: string) => {
+    const params = new URLSearchParams();
+    if (limit) params.set('limit', String(limit));
+    if (before) params.set('before', before);
+    const qs = params.toString();
+    return fetchApi<ChatThread & { messages: ChatMsg[]; totalCount: number }>(`/threads/${id}${qs ? `?${qs}` : ''}`);
+  },
   createThread: (agentId: string, title?: string) =>
     fetchApi<ChatThread>('/threads', { method: 'POST', body: JSON.stringify({ agent_id: agentId, title }) }),
   addMessage: (threadId: string, role: string, content: string, toolCalls?: unknown[]) =>
@@ -56,6 +61,20 @@ export const api = {
     fetchApi<{ ok: boolean }>(`/threads/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteThread: (id: string) =>
     fetchApi<{ ok: boolean }>(`/threads/${id}`, { method: 'DELETE' }),
+
+  // Services (InsForge)
+  getServices: () =>
+    fetchApi<InsforgeServices>('/services'),
+
+  // Workspaces
+  getWorkspaces: () =>
+    fetchApi<Workspace[]>('/workspaces'),
+  pauseWorkspace: (id: string) =>
+    fetchApi<{ ok: boolean }>(`/workspaces/${id}/pause`, { method: 'POST' }),
+  resumeWorkspace: (id: string) =>
+    fetchApi<{ ok: boolean }>(`/workspaces/${id}/resume`, { method: 'POST' }),
+  destroyWorkspace: (id: string) =>
+    fetchApi<{ ok: boolean }>(`/workspaces/${id}`, { method: 'DELETE' }),
 
   // Connections
   getConnections: () =>
@@ -243,6 +262,24 @@ export const api = {
   deleteAgentPolicy: (id: string) =>
     fetchApi<{ ok: boolean }>(`/admin/policies/agents/${id}`, { method: 'DELETE' }),
 
+  // Projects
+  getProjects: () => fetchApi<Project[]>('/projects'),
+  getProject: (id: string) => fetchApi<Project & { sessions: ProjectSession[] }>(`/projects/${id}`),
+  createProject: (data: { name: string; description?: string; team_id?: string; insforge_project_id?: string }) =>
+    fetchApi<Project>('/projects', { method: 'POST', body: JSON.stringify(data) }),
+  updateProject: (id: string, data: Partial<{ name: string; description: string; visibility: string; team_id: string; insforge_project_id: string }>) =>
+    fetchApi<Project>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteProject: (id: string) =>
+    fetchApi<{ ok: boolean }>(`/projects/${id}`, { method: 'DELETE', body: JSON.stringify({ confirm: true }) }),
+
+  // Project Sessions
+  getProjectSessions: (projectId: string) =>
+    fetchApi<ProjectSession[]>(`/projects/${projectId}/sessions`),
+  startProjectSession: (projectId: string, message: string, agentId: string) =>
+    fetchApi<ProjectSession>(`/projects/${projectId}/sessions`, { method: 'POST', body: JSON.stringify({ message, agent_id: agentId }) }),
+  cancelProjectSession: (projectId: string, sessionId: string) =>
+    fetchApi<{ ok: boolean }>(`/projects/${projectId}/sessions/${sessionId}/cancel`, { method: 'POST' }),
+
   // Communication Channels
   getChannels: () => fetchApi<CommunicationChannel[]>('/channels'),
   getChannelsSummary: () => fetchApi<ChannelsSummary>('/channels/summary'),
@@ -366,6 +403,35 @@ export interface ScheduleTemplate {
   name: string;
   cron_expression: string;
   prompt: string;
+}
+
+export interface InsforgeServices {
+  database: {
+    tables: { tableName: string; recordCount: number }[];
+    totalSizeInGB: number;
+  };
+  functions: { slug: string; name: string; description: string | null; status: string }[];
+  storage: {
+    buckets: { name: string; public: boolean; createdAt?: string; objectCount?: number }[];
+    totalSizeInGB: number;
+  };
+  deployments: { id: string; provider: string; status: string; url: string | null; createdAt: string }[];
+  version?: string;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  agentId: string;
+  agentName: string;
+  containerId: string | null;
+  status: 'created' | 'running' | 'paused' | 'destroyed';
+  portMappings: { containerPort: number; hostPort: number; url: string }[];
+  insforgeProjectId: string | null;
+  diskUsageMb: number;
+  createdAt: string;
+  updatedAt: string;
+  lastActiveAt: string | null;
 }
 
 export interface ChatThread {
@@ -542,4 +608,38 @@ export interface ChannelThread {
   chat_thread_id: string | null;
   created_at: string;
   last_message_at: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string | null;
+  stack: string;
+  visibility: 'private' | 'team' | 'public';
+  git_repo_slug: string;
+  app_url: string;
+  session_count: number;
+  last_session_at: string | null;
+  last_commit_sha: string | null;
+  workspace_status: 'created' | 'running' | 'paused' | 'destroyed';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectSession {
+  id: string;
+  project_id: string;
+  agent_id: string;
+  user_id: string;
+  status: 'pending' | 'running' | 'committed' | 'failed' | 'cancelled';
+  container_id: string | null;
+  commit_sha: string | null;
+  commit_message: string | null;
+  input: string;
+  output: string | null;
+  error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_ms: number | null;
+  created_at: string;
 }

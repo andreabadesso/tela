@@ -26,7 +26,7 @@ export function Chat({ initialThreadId }: { initialThreadId?: string }) {
     queryFn: () => api.getThreads(),
   });
 
-  const { runtime, currentThreadId } = useTelaRuntime(selectedAgent, activeThreadId);
+  const { runtime, currentThreadId, hasMore, loadMore, loadingMore } = useTelaRuntime(selectedAgent, activeThreadId);
 
   // Sync currentThreadId back (auto-created threads)
   useEffect(() => {
@@ -157,7 +157,7 @@ export function Chat({ initialThreadId }: { initialThreadId?: string }) {
 
           {/* Thread */}
           <div className="flex-1 overflow-hidden">
-            <Thread />
+            <Thread hasMore={hasMore} loadMore={loadMore} loadingMore={loadingMore} threadId={activeThreadId} />
           </div>
         </div>
       </div>

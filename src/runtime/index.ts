@@ -1,6 +1,7 @@
 import type { AgentRuntime, RuntimeType, DockerRuntimeConfig } from '../types/runtime.js';
 import type { AgentService } from '../agent/service.js';
 import type { DatabaseService } from '../core/database.js';
+import type { EncryptionService } from '../core/encryption.js';
 import type { AgentRow } from '../types/index.js';
 import { InProcessRuntime } from './in-process.js';
 import { DockerRuntime } from './docker.js';
@@ -98,6 +99,7 @@ export function createRuntimeRegistry(
   db: DatabaseService,
   dockerConfig?: DockerRuntimeConfig,
   devContainerConfig?: DevContainerConfig,
+  encryption?: EncryptionService,
 ): RuntimeRegistry {
   const registry = new RuntimeRegistry();
 
@@ -129,7 +131,7 @@ export function createRuntimeRegistry(
   const wantsDevContainer = process.env.AGENT_RUNTIME === 'devcontainer' || devContainerConfig;
   if (wantsDevContainer) {
     try {
-      const devRuntime = new DevContainerRuntime(agentService, db, devContainerConfig);
+      const devRuntime = new DevContainerRuntime(agentService, db, devContainerConfig, encryption);
       registry.register(devRuntime);
       console.log('[runtime] DevContainer runtime registered');
     } catch (err) {

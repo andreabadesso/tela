@@ -25,33 +25,33 @@ Built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents/claude
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────┐
 │                         FRONTEND                              │
 │   React + Shadcn/ui + assistant-ui                            │
 │   Chat │ Agents │ Connections │ Schedules │ Knowledge │ Admin │
-├──────────────────────────────────────────────────────────────┤
-│                    API LAYER (Hono + WebSocket)                │
-│                 Auth: email/password + API keys + SSO          │
-├──────────────────────────────────────────────────────────────┤
-│                       ORCHESTRATOR                             │
-│   Routes requests → selects agent → manages turns              │
-│   Chat mode │ Background tasks │ Council mode (parallel)       │
-├──────────────────────────────────────────────────────────────┤
-│                 MCP GOVERNANCE GATEWAY                          │
-│   Per-user tool filtering │ Data classification │ Rate limits   │
-│   Audit logging │ Credential injection │ Policy enforcement     │
-├───────────────┬──────────────┬─────────────┬─────────────────┤
+├───────────────────────────────────────────────────────────────┤
+│                    API LAYER (Hono + WebSocket)               │
+│                 Auth: email/password + API keys + SSO         │
+├───────────────────────────────────────────────────────────────┤
+│                       ORCHESTRATOR                            │
+│   Routes requests → selects agent → manages turns             │
+│   Chat mode │ Background tasks │ Council mode (parallel)      │
+├───────────────────────────────────────────────────────────────┤
+│                 MCP GOVERNANCE GATEWAY                        │
+│   Per-user tool filtering │ Data classification │ Rate limits │
+│   Audit logging │ Credential injection │ Policy enforcement   │
+├───────────────┬──────────────┬─────────────┬──────────────────┤
 │   Jira MCP    │  GitHub MCP  │  ShipLens   │  Custom MCP      │
-├───────────────┴──────────────┴─────────────┴─────────────────┤
-│                      RBAC ENGINE                               │
-│   Users │ Roles │ Teams │ Policies │ Budget │ Approvals        │
-├──────────────────────────────────────────────────────────────┤
-│                    KNOWLEDGE LAYER                              │
-│   Obsidian │ Filesystem │ ChromaDB vector search               │
-├──────────────────────────────────────────────────────────────┤
-│                     PERSISTENCE                                │
-│   SQLite WAL │ Conversations │ Audit │ Policies │ Threads      │
-└──────────────────────────────────────────────────────────────┘
+├───────────────┴──────────────┴─────────────┴──────────────────┤
+│                      RBAC ENGINE                              │
+│   Users │ Roles │ Teams │ Policies │ Budget │ Approvals       │
+├───────────────────────────────────────────────────────────────┤
+│                    KNOWLEDGE LAYER                            │
+│   Obsidian │ Filesystem │ ChromaDB vector search              │
+├───────────────────────────────────────────────────────────────┤
+│                     PERSISTENCE                               │
+│   SQLite WAL │ Conversations │ Audit │ Policies │ Threads     │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 ---

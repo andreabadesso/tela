@@ -47,7 +47,7 @@ export class PortProxyManager {
 
     await new Promise<void>((resolve, reject) => {
       server.on('error', reject);
-      server.listen(hostPort, '0.0.0.0', () => resolve());
+      server.listen(hostPort, '127.0.0.1', () => resolve());
     });
 
     this.proxies.set(hostPort, server);

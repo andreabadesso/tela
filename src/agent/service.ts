@@ -9,7 +9,10 @@ import type { AgentInput, AgentOutput } from '../types/index.js';
 import { config } from '../config/env.js';
 import { buildMemoryContext, buildMemoryMcpServer } from './memory.js';
 import { buildScheduleMcpServer, type ScheduleToolsContext } from '../tools/schedule-tools.js';
+import { buildWorkspaceToolsMcpServer } from '../tools/workspace-tools.js';
 import { buildInsforgeMcpServer } from './insforge-mcp-bridge.js';
+import { APP_BUILDER_SYSTEM_PROMPT } from './app-builder-prompt.js';
+import type { WorkspaceManager } from '../runtime/workspace-manager.js';
 import { ConversationContextService } from './context.js';
 import type { ToolSandbox, AgentStreamEvent } from '../types/runtime.js';
 import type { JobRegistry } from '../jobs/registry.js';
@@ -28,6 +31,7 @@ export class AgentService {
   private mcpGateway: McpGateway | null;
   private knowledgeManager: KnowledgeManager | null;
   private jobRegistry: JobRegistry | null = null;
+  private workspaceManager: WorkspaceManager | null = null;
 
   constructor(
     private db: DatabaseService,
@@ -44,6 +48,11 @@ export class AgentService {
   /** Set the job registry so agents can schedule jobs via MCP tools. */
   setScheduleDeps(jobRegistry: JobRegistry): void {
     this.jobRegistry = jobRegistry;
+  }
+
+  /** Set the workspace manager so container agents can expose ports via MCP tools. */
+  setWorkspaceDeps(workspaceManager: WorkspaceManager): void {
+    this.workspaceManager = workspaceManager;
   }
 
   private buildMcpServer(sandbox?: ToolSandbox) {
@@ -287,7 +296,10 @@ export class AgentService {
       day: 'numeric',
     });
 
-    const interpolatedPrompt = this.interpolatePrompt(agentConfig.system_prompt, agentConfig.name);
+    // App Builder agents use a fixed, non-user-configurable system prompt
+    const isAppBuilder = (agentConfig as any).type === 'app-builder';
+    const baseSystemPrompt = isAppBuilder ? APP_BUILDER_SYSTEM_PROMPT : agentConfig.system_prompt;
+    const interpolatedPrompt = isAppBuilder ? baseSystemPrompt : this.interpolatePrompt(baseSystemPrompt, agentConfig.name);
     const memoryContext = buildMemoryContext(this.db, agentId, input.userId);
 
     const contextManager = new ConversationContextService(this.db);
@@ -304,6 +316,46 @@ export class AgentService {
       `Today is ${today}. Current time: ${currentTime} (${currentIso}).`,
       'Respond in Portuguese (BR) unless the message is in English.',
     ];
+
+    if (config.insforgeApiUrl) {
+      systemPromptParts.push(
+        '',
+        [
+          'You have access to InsForge tools (insforge MCP server) for backend, database, and storage.',
+          'For deploying frontend apps, do NOT use InsForge create-deployment (it requires Vercel credentials). Use the workspace-tools MCP server instead:',
+          '',
+          'LIVE PREVIEW (do this at the start of every session):',
+          '  1. Start the Vite dev server in the background:',
+          '       cd /workspace/repo && npm run dev -- --host 0.0.0.0 &',
+          '     Then wait 3 seconds for it to start: sleep 3',
+          '  2. Call `serve_workspace_app(api_port: 5173)` — this immediately gives the user a live preview.',
+          '     The URL stays active while you work. The user can watch changes happen in real time.',
+          '',
+          'FINAL DEPLOY (do this when you are done with all changes):',
+          'Build the production bundle and register the static files using one of the two cases below.',
+          '',
+          'CASE A — backend is InsForge functions (most common):',
+          '  1. Build the frontend with the correct base path and InsForge proxy URL:',
+          '       cd /workspace/myapp/frontend && VITE_API_BASE_URL=/apps/$WORKSPACE_ID/__insforge/{your-function-slug} npm run build -- --base=/apps/$WORKSPACE_ID/',
+          '     Example: if your function slug is "tasks-api", use VITE_API_BASE_URL=/apps/$WORKSPACE_ID/__insforge/tasks-api',
+          '  2. In your frontend api.ts, use: const BASE = import.meta.env.VITE_API_BASE_URL ?? "";',
+          '     Then call: fetch(`${BASE}/tasks`) — this maps to /__insforge/tasks-api/tasks on the server.',
+          '  3. Call `serve_workspace_app(directory: "/workspace/myapp/frontend/dist")` — no api_port needed.',
+          '  NOTE: do NOT use the InsForge internal URL (localhost:7130 etc.) — the browser cannot reach it.',
+          '  NOTE: do NOT use /functions/v1/{slug} paths — InsForge serves functions at /{slug}/... directly.',
+          '  VITE_API_BASE_URL must include the function slug so fetch calls map to the correct function.',
+          '',
+          'CASE B — backend is a local process running inside this container:',
+          '  1. Start the backend: e.g. `cd /workspace/myapp/api && node server.js &` (use port 3001, not 3000)',
+          '  2. Build the frontend: cd /workspace/myapp/frontend && npm run build -- --base=/apps/$WORKSPACE_ID/',
+          '  3. Call `serve_workspace_app(directory: "...", api_port: 3001)` to register both.',
+          '  NOTE: the frontend must use relative fetch paths (fetch("api/tasks") not fetch("/api/tasks")).',
+          '',
+          'IMPORTANT: Always call serve_workspace_app(api_port: 5173) at the start to give a live preview.',
+          'Always call serve_workspace_app(directory: "dist") (or the appropriate path) at the end to make the deploy permanent.',
+        ].join('\n'),
+      );
+    }
 
     if (this.jobRegistry) {
       systemPromptParts.push(
@@ -339,10 +391,14 @@ export class AgentService {
       memoryContextTokens: contextManager.estimateTokens(memoryContext),
     });
 
+    // Inject project context block when provided (App Builder sessions)
+    const projectContext = input.metadata?.projectContext as string | undefined;
+
     const systemPrompt = [
       systemPromptBase,
       input.instructions || '',
-      memoryContext,
+      projectContext || '',
+      isAppBuilder ? '' : memoryContext,  // App Builder doesn't use conversation memory
       '',
       historyContext,
     ].filter(Boolean).join('\n');
@@ -403,16 +459,30 @@ export class AgentService {
 
     if (containerExec) {
       const insforgeUrl = config.insforgeApiUrl.replace('host.docker.internal', 'localhost');
+      const workspaceHostPath = input.metadata?.workspaceHostPath as string | undefined;
+      const workspaceId = input.metadata?.workspaceId as string | undefined;
       const insforgeMcp = config.insforgeApiUrl
-        ? await buildInsforgeMcpServer(insforgeUrl, config.insforgeApiKey)
+        ? await buildInsforgeMcpServer(insforgeUrl, config.insforgeApiKey, workspaceHostPath)
+        : null;
+      const workspaceMcp = (workspaceId && this.workspaceManager)
+        ? buildWorkspaceToolsMcpServer(workspaceId, this.workspaceManager)
         : null;
 
-      mcpServers = {
-        ...knowledgeServers,
-        ...(memoryMcpServer ? { 'memory-tools': memoryMcpServer } : {}),
-        ...(scheduleMcpServer ? { 'schedule-tools': scheduleMcpServer } : {}),
-        ...(insforgeMcp ? { 'insforge': insforgeMcp } : {}),
-      };
+      if (isAppBuilder) {
+        // App Builder: restricted tool set — InsForge + workspace tools only, no memory/schedules/external
+        mcpServers = {
+          ...(insforgeMcp ? { 'insforge': insforgeMcp } : {}),
+          ...(workspaceMcp ? { 'workspace-tools': workspaceMcp } : {}),
+        };
+      } else {
+        mcpServers = {
+          ...knowledgeServers,
+          ...(memoryMcpServer ? { 'memory-tools': memoryMcpServer } : {}),
+          ...(scheduleMcpServer ? { 'schedule-tools': scheduleMcpServer } : {}),
+          ...(insforgeMcp ? { 'insforge': insforgeMcp } : {}),
+          ...(workspaceMcp ? { 'workspace-tools': workspaceMcp } : {}),
+        };
+      }
     } else if (input.userId && this.mcpGateway) {
       const governedServers = await this.mcpGateway.resolveServers(input.userId, agentId);
       mcpServers = {

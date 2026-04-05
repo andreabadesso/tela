@@ -21,7 +21,12 @@ export class VectorStoreService {
   private collectionName: string;
 
   constructor(vaultPath: string, collectionName: string = DEFAULT_COLLECTION_NAME) {
-    this.client = new ChromaClient({ path: config.chromaUrl });
+    const chromaUrl = new URL(config.chromaUrl);
+    this.client = new ChromaClient({
+      ssl: chromaUrl.protocol === 'https:',
+      host: chromaUrl.hostname,
+      port: chromaUrl.port ? parseInt(chromaUrl.port) : (chromaUrl.protocol === 'https:' ? 443 : 8000),
+    });
     this.vaultPath = vaultPath;
     this.collectionName = collectionName;
   }

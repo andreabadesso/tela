@@ -94,6 +94,7 @@ web/src/
 ## Key architecture patterns
 
 - **MCP Governance Gateway**: every tool call goes through policy check > tool filtering > data classification > rate limiting > credential injection > audit logging.
+- **App Proxy**: agent-generated apps are accessed through `/apps/{workspaceId}/*`, an RBAC-controlled HTTP reverse proxy. The proxy handles auth (session cookie/API key), checks workspace visibility (private/team/public), injects `X-Tela-User-*` identity headers, and provides `/__tela/me` (user identity) and `/__tela/token` (JWT for InsForge RLS). Apps never implement auth themselves.
 - **Plugin interfaces**: `KnowledgeAdapter`, `ChannelAdapter`, `RuntimeBackend`, `NotificationChannel` — extend by implementing the interface and registering.
 - **Streaming-first**: `chatStream()` yields `AgentStreamEvent` for real-time UI. WebSocket for persistent connections.
 - **3-tier credential resolution**: user token > team token > company token. Configured via `token_strategy` on connections.
@@ -111,6 +112,19 @@ cd web && npm run dev   # Vite on port 5173, proxies to :3000
 # Tests
 npm test
 ```
+
+## Known bugs
+
+Before implementing features or fixing issues, read `bugs/` — it documents bugs that have been found (and sometimes fixed) so you don't repeat the same mistakes. Each file is numbered and describes the root cause and the correct fix.
+
+```
+bugs/
+  001-project-workspace-fk-constraint.md   — workspace creation fails if agent_id is not a real DB ID
+  002-preview-no-port-before-serve.md      — iframe shows JSON error before agent calls serve_workspace_app
+  003-project-chat-history-lost-on-refresh.md — stream state lost on page refresh (use localStorage)
+```
+
+When you discover a new bug (even if you fix it immediately), add a file to `bugs/` describing what happened, why, and how to avoid it.
 
 ## Conventions
 

@@ -110,10 +110,29 @@ async function callTool(conn: InsForgeConnection, name: string, args: Record<str
 }
 
 /**
+ * Rewrite /workspace paths in tool arguments to the host-side bind mount path.
+ * This is necessary because InsForge runs on the host and needs host-accessible paths
+ * (e.g., for create-deployment which reads source files from the filesystem).
+ */
+function rewriteWorkspacePaths(args: Record<string, unknown>, workspaceHostPath: string): Record<string, unknown> {
+  const rewritten = { ...args };
+  for (const [key, value] of Object.entries(rewritten)) {
+    if (typeof value === 'string' && value.startsWith('/workspace')) {
+      rewritten[key] = value.replace('/workspace', workspaceHostPath);
+    }
+  }
+  return rewritten;
+}
+
+/**
  * Build an SDK MCP server that proxies all InsForge tools.
  * Returns null if InsForge is not configured.
+ *
+ * @param workspaceHostPath — host-side path that maps to /workspace inside the container.
+ *   When provided, any tool args containing /workspace paths are rewritten to the host path.
+ *   This is critical for create-deployment which reads source files from the host filesystem.
  */
-export async function buildInsforgeMcpServer(apiBaseUrl: string, apiKey?: string) {
+export async function buildInsforgeMcpServer(apiBaseUrl: string, apiKey?: string, workspaceHostPath?: string) {
   try {
     const conn = await startInsForgeProcess(apiBaseUrl, apiKey);
     const mcpTools = await discoverTools(conn);
@@ -152,7 +171,9 @@ export async function buildInsforgeMcpServer(apiBaseUrl: string, apiKey?: string
         zodShape,
         async (args: Record<string, unknown>) => {
           try {
-            const result = await callTool(conn, t.name, args) as any;
+            // Rewrite /workspace paths to host paths for tools that access the filesystem
+            const effectiveArgs = workspaceHostPath ? rewriteWorkspacePaths(args, workspaceHostPath) : args;
+            const result = await callTool(conn, t.name, effectiveArgs) as any;
             // MCP tool results have a `content` array
             if (result?.content) {
               return { content: result.content };
@@ -160,7 +181,12 @@ export async function buildInsforgeMcpServer(apiBaseUrl: string, apiKey?: string
             return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            return { content: [{ type: 'text' as const, text: `Error: ${msg}` }], isError: true };
+            // Provide a clear error for deployment failures so the agent doesn't try workarounds
+            const isDeployTool = t.name === 'create-deployment' || t.name === 'start-deployment';
+            const hint = isDeployTool
+              ? ' This is a server-side InsForge configuration issue. Report this error to the user and do NOT attempt alternative deployment methods (vite preview, Vercel CLI, etc.).'
+              : '';
+            return { content: [{ type: 'text' as const, text: `Error: ${msg}${hint}` }], isError: true };
           }
         },
       );

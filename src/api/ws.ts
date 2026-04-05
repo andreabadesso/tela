@@ -1,16 +1,25 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import net from 'node:net';
 import type { Server } from 'node:http';
 import type { IncomingMessage } from 'node:http';
+import type { Duplex } from 'node:stream';
 import type { ApiDeps } from './server.js';
 import { resolveUserFromToken, type AuthUser } from './middleware.js';
+import type { DevContainerRuntime } from '../runtime/devcontainer.js';
 
 const API_TOKEN = process.env.API_TOKEN;
 
 export function setupWebSocket(server: Server, deps: ApiDeps) {
   const wss = new WebSocketServer({ noServer: true });
 
-  server.on('upgrade', async (request: IncomingMessage, socket, head) => {
+  server.on('upgrade', async (request: IncomingMessage, socket: Duplex, head) => {
     const url = new URL(request.url ?? '/', `http://${request.headers.host}`);
+
+    // ─── App Proxy WebSocket (for HMR, real-time apps) ───────────
+    if (url.pathname.startsWith('/apps/')) {
+      await handleAppProxyUpgrade(request, socket, head, url, deps);
+      return;
+    }
 
     if (url.pathname !== '/api/chat/stream') {
       socket.destroy();
@@ -127,6 +136,119 @@ export function setupWebSocket(server: Server, deps: ApiDeps) {
   });
 
   return wss;
+}
+
+/**
+ * Handle WebSocket upgrade for /apps/:workspaceId/* paths.
+ * Authenticates the user, checks workspace access, then pipes
+ * the raw TCP connection to the container's mapped port.
+ * Required for HMR (Vite, Next.js dev servers) and real-time apps.
+ */
+async function handleAppProxyUpgrade(
+  request: IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+  url: URL,
+  deps: ApiDeps,
+): Promise<void> {
+  // Authenticate
+  const token = url.searchParams.get('token') ?? parseBearer(request.headers.authorization);
+  const sessionCookie = parseCookie(request.headers.cookie, 'session_token');
+  const auth = deps.auth ?? null;
+
+  let user: AuthUser | null = null;
+  if (token) user = await resolveUserFromToken(auth, token);
+  if (!user && sessionCookie) user = await resolveUserFromToken(auth, sessionCookie);
+  if (!user && !API_TOKEN && !auth) {
+    user = { id: 'dev', email: 'dev@tela.local', name: 'Developer', roles: ['admin'], teams: [] };
+  }
+
+  if (!user) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  // Parse workspace ID from path: /apps/:workspaceId/...
+  const pathParts = url.pathname.split('/');
+  const workspaceId = pathParts[2];
+  if (!workspaceId) {
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  const workspace = deps.db.getWorkspace(workspaceId);
+  if (!workspace || workspace.status !== 'running') {
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  // RBAC check
+  const isAdmin = user.roles.includes('admin');
+  const isOwner = workspace.owner_id === user.id;
+  const isTeamMember = workspace.visibility === 'team' && workspace.team_id != null && user.teams.includes(workspace.team_id);
+  const isPublic = workspace.visibility === 'public';
+
+  if (!isAdmin && !isOwner && !isTeamMember && !isPublic) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  // Resolve target port
+  const portMappings: { containerPort: number; hostPort: number; url: string }[] = JSON.parse(workspace.port_mappings);
+  if (portMappings.length === 0) {
+    socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  // Check for explicit port: /apps/:id/_port/:containerPort/...
+  let targetHostPort = portMappings[0].hostPort;
+  if (pathParts[3] === '_port' && pathParts[4]) {
+    const containerPort = parseInt(pathParts[4], 10);
+    const mapping = portMappings.find(m => m.containerPort === containerPort);
+    if (mapping) targetHostPort = mapping.hostPort;
+  }
+
+  // Reconstruct the path for the upstream (strip /apps/:workspaceId prefix)
+  const prefixLength = pathParts[3] === '_port' ? 5 : 3; // skip /apps/:id or /apps/:id/_port/:port
+  const upstreamPath = '/' + pathParts.slice(prefixLength).join('/');
+  const upstreamUrl = `${upstreamPath}${url.search}`;
+
+  // Pipe raw TCP: forward the original HTTP upgrade request to the container
+  const upstream = net.createConnection({ host: '127.0.0.1', port: targetHostPort }, () => {
+    // Reconstruct the HTTP upgrade request line + headers
+    const reqLine = `${request.method} ${upstreamUrl} HTTP/${request.httpVersion}\r\n`;
+    const headers = Object.entries(request.headers)
+      .filter(([key]) => !key.toLowerCase().startsWith('x-tela-'))
+      .map(([key, val]) => `${key}: ${Array.isArray(val) ? val.join(', ') : val}`)
+      .join('\r\n');
+
+    // Add identity headers
+    const telaHeaders = [
+      `X-Tela-User-Id: ${user!.id}`,
+      `X-Tela-User-Email: ${user!.email}`,
+      ...(user!.name ? [`X-Tela-User-Name: ${user!.name}`] : []),
+      `X-Tela-User-Roles: ${user!.roles.join(',')}`,
+    ].join('\r\n');
+
+    upstream.write(`${reqLine}${headers}\r\n${telaHeaders}\r\n\r\n`);
+    if (head.length > 0) upstream.write(head);
+
+    // Bidirectional pipe
+    upstream.pipe(socket);
+    socket.pipe(upstream);
+  });
+
+  upstream.on('error', () => {
+    socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+    socket.destroy();
+  });
+
+  socket.on('error', () => upstream.destroy());
 }
 
 function parseBearer(header?: string): string | null {

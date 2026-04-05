@@ -1,323 +1,174 @@
-
-import { memo, useCallback, useRef, useState } from "react";
+import { memo, useState } from "react";
 import {
-  AlertCircleIcon,
   CheckIcon,
-  ChevronDownIcon,
+  ChevronRightIcon,
+  CodeIcon,
+  FileEditIcon,
+  FileSearchIcon,
+  FileTextIcon,
+  GlobeIcon,
   LoaderIcon,
+  SearchIcon,
+  TerminalIcon,
   XCircleIcon,
+  ZapIcon,
 } from "lucide-react";
-import {
-  useScrollLock,
-  type ToolCallMessagePartStatus,
-  type ToolCallMessagePartComponent,
-} from "@assistant-ui/react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import type { ToolCallMessagePartComponent, ToolCallMessagePartStatus } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 
-const ANIMATION_DURATION = 200;
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-export type ToolFallbackRootProps = Omit<
-  React.ComponentProps<typeof Collapsible>,
-  "open" | "onOpenChange"
-> & {
-  open?: boolean;
-  onOpenChange?: (open: boolean) => void;
-  defaultOpen?: boolean;
-};
-
-function ToolFallbackRoot({
-  className,
-  open: controlledOpen,
-  onOpenChange: controlledOnOpenChange,
-  defaultOpen = false,
-  children,
-  ...props
-}: ToolFallbackRootProps) {
-  const collapsibleRef = useRef<HTMLDivElement>(null);
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
-  const lockScroll = useScrollLock(collapsibleRef, ANIMATION_DURATION);
-
-  const isControlled = controlledOpen !== undefined;
-  const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
-
-  const handleOpenChange = useCallback(
-    (open: boolean) => {
-      if (!open) {
-        lockScroll();
-      }
-      if (!isControlled) {
-        setUncontrolledOpen(open);
-      }
-      controlledOnOpenChange?.(open);
-    },
-    [lockScroll, isControlled, controlledOnOpenChange],
-  );
-
-  return (
-    <Collapsible
-      ref={collapsibleRef}
-      data-slot="tool-fallback-root"
-      open={isOpen}
-      onOpenChange={handleOpenChange}
-      className={cn(
-        "aui-tool-fallback-root group/tool-fallback-root w-full rounded-lg border py-3",
-        className,
-      )}
-      style={
-        {
-          "--animation-duration": `${ANIMATION_DURATION}ms`,
-        } as React.CSSProperties
-      }
-      {...props}
-    >
-      {children}
-    </Collapsible>
-  );
+function toTitleCase(s: string) {
+  return s.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-type ToolStatus = ToolCallMessagePartStatus["type"];
+function formatToolName(toolName: string): { primary: string; secondary?: string } {
+  const mcpMatch = toolName.match(/^mcp__([a-zA-Z0-9-]+)__(.+)$/);
+  if (mcpMatch) {
+    return { primary: toTitleCase(mcpMatch[2]), secondary: toTitleCase(mcpMatch[1]) };
+  }
+  return { primary: toolName };
+}
 
-const statusIconMap: Record<ToolStatus, React.ElementType> = {
-  running: LoaderIcon,
-  complete: CheckIcon,
-  incomplete: XCircleIcon,
-  "requires-action": AlertCircleIcon,
-};
+function truncate(s: string, max: number) {
+  return s.length > max ? s.slice(0, max) + "…" : s;
+}
 
-function ToolFallbackTrigger({
-  toolName,
-  status,
-  className,
-  ...props
-}: React.ComponentProps<typeof CollapsibleTrigger> & {
-  toolName: string;
-  status?: ToolCallMessagePartStatus;
-}) {
+function shortenPath(p: string) {
+  const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.length > 2 ? parts.slice(-2).join("/") : p;
+}
+
+function getArgSummary(toolName: string, argsText?: string): string | null {
+  if (!argsText?.trim()) return null;
+  try {
+    const args = JSON.parse(argsText);
+    switch (toolName) {
+      case "Read":
+      case "Write":
+      case "Edit":
+        return args.file_path ? shortenPath(args.file_path) : null;
+      case "Glob":
+        return args.pattern ? truncate(args.pattern, 50) : null;
+      case "Grep":
+        return args.pattern ? `"${truncate(args.pattern, 40)}"` : null;
+      case "Bash":
+        return args.command ? truncate(args.command, 60) : null;
+      case "WebFetch":
+        return args.url ? truncate(args.url, 60) : null;
+      case "WebSearch":
+        return args.query ? truncate(args.query, 60) : null;
+      case "Agent":
+        return args.description ? truncate(args.description, 60) : null;
+      default: {
+        const first = Object.values(args).find((v) => typeof v === "string" && (v as string).length > 0);
+        return first ? truncate(String(first), 60) : null;
+      }
+    }
+  } catch {
+    return null;
+  }
+}
+
+function ToolIcon({ toolName, className }: { toolName: string; className?: string }) {
+  const lower = toolName.toLowerCase();
+  let Icon = ZapIcon;
+  if (lower === "read") Icon = FileTextIcon;
+  else if (lower === "write" || lower === "edit") Icon = FileEditIcon;
+  else if (lower === "glob") Icon = FileSearchIcon;
+  else if (lower === "grep") Icon = SearchIcon;
+  else if (lower === "bash") Icon = TerminalIcon;
+  else if (lower === "webfetch" || lower === "websearch") Icon = GlobeIcon;
+  else if (lower.includes("code") || lower.includes("sql")) Icon = CodeIcon;
+  return <Icon className={className} />;
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
+const ToolFallbackImpl: ToolCallMessagePartComponent = ({ toolName, argsText, result, status }) => {
+  const [open, setOpen] = useState(false);
+
   const statusType = status?.type ?? "complete";
   const isRunning = statusType === "running";
-  const isCancelled =
-    status?.type === "incomplete" && status.reason === "cancelled";
+  const isCancelled = status?.type === "incomplete" && status.reason === "cancelled";
+  const isError = status?.type === "incomplete" && status.reason !== "cancelled";
 
-  const Icon = statusIconMap[statusType];
-  const label = isCancelled ? "Cancelled tool" : "Used tool";
+  const { primary, secondary } = formatToolName(toolName);
+  const summary = getArgSummary(toolName, argsText);
+
+  let pretty: string | undefined;
+  try { pretty = argsText ? JSON.stringify(JSON.parse(argsText), null, 2) : undefined; } catch { pretty = argsText; }
+  const resultText = result === undefined ? undefined : typeof result === "string" ? result : JSON.stringify(result, null, 2);
 
   return (
-    <CollapsibleTrigger
-      data-slot="tool-fallback-trigger"
-      className={cn(
-        "aui-tool-fallback-trigger group/trigger flex w-full items-center gap-2 px-4 text-sm transition-colors",
-        className,
-      )}
-      {...props}
-    >
-      <Icon
-        data-slot="tool-fallback-trigger-icon"
+    <div className={cn("group/tool my-0.5 text-xs", isCancelled && "opacity-50")}>
+      {/* Pill trigger */}
+      <button
+        onClick={() => !isRunning && setOpen((o) => !o)}
+        disabled={isRunning}
         className={cn(
-          "aui-tool-fallback-trigger-icon size-4 shrink-0",
-          isCancelled && "text-muted-foreground",
-          isRunning && "animate-spin",
-        )}
-      />
-      <span
-        data-slot="tool-fallback-trigger-label"
-        className={cn(
-          "aui-tool-fallback-trigger-label-wrapper relative inline-block grow text-left leading-none",
-          isCancelled && "text-muted-foreground line-through",
+          "flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors",
+          "text-muted-foreground hover:text-foreground hover:bg-muted/60",
+          isRunning && "cursor-default",
+          open && "bg-muted/60 text-foreground",
         )}
       >
-        <span>
-          {label}: <b>{toolName}</b>
+        {/* Status icon */}
+        {isRunning ? (
+          <LoaderIcon className="size-3 shrink-0 animate-spin" />
+        ) : isError ? (
+          <XCircleIcon className="size-3 shrink-0 text-destructive" />
+        ) : isCancelled ? (
+          <XCircleIcon className="size-3 shrink-0" />
+        ) : (
+          <CheckIcon className="size-3 shrink-0 text-emerald-500" />
+        )}
+
+        {/* Tool icon */}
+        <ToolIcon toolName={toolName} className="size-3 shrink-0" />
+
+        {/* Label */}
+        <span className="flex items-baseline gap-1">
+          {secondary && <span className="text-muted-foreground/60">{secondary}:</span>}
+          <span className={cn("font-medium", isCancelled && "line-through")}>{primary}</span>
+          {summary && <span className="font-mono text-muted-foreground/60 truncate max-w-64">{summary}</span>}
         </span>
-        {isRunning && (
-          <span
-            aria-hidden
-            data-slot="tool-fallback-trigger-shimmer"
-            className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
-          >
-            {label}: <b>{toolName}</b>
-          </span>
+
+        {/* Expand chevron — only when not running and there's content to show */}
+        {!isRunning && (pretty || resultText) && (
+          <ChevronRightIcon
+            className={cn("size-3 shrink-0 ml-auto transition-transform", open && "rotate-90")}
+          />
         )}
-      </span>
-      <ChevronDownIcon
-        data-slot="tool-fallback-trigger-chevron"
-        className={cn(
-          "aui-tool-fallback-trigger-chevron size-4 shrink-0",
-          "transition-transform duration-(--animation-duration) ease-out",
-          "group-data-[state=closed]/trigger:-rotate-90",
-          "group-data-[state=open]/trigger:rotate-0",
-        )}
-      />
-    </CollapsibleTrigger>
-  );
-}
+      </button>
 
-function ToolFallbackContent({
-  className,
-  children,
-  ...props
-}: React.ComponentProps<typeof CollapsibleContent>) {
-  return (
-    <CollapsibleContent
-      data-slot="tool-fallback-content"
-      className={cn(
-        "aui-tool-fallback-content relative overflow-hidden text-sm outline-none",
-        "group/collapsible-content ease-out",
-        "data-[state=closed]:animate-collapsible-up",
-        "data-[state=open]:animate-collapsible-down",
-        "data-[state=closed]:fill-mode-forwards",
-        "data-[state=closed]:pointer-events-none",
-        "data-[state=open]:duration-(--animation-duration)",
-        "data-[state=closed]:duration-(--animation-duration)",
-        className,
+      {/* Expanded detail */}
+      {open && (pretty || resultText || isError) && (
+        <div className="ml-6 mt-1 flex flex-col gap-2 rounded-md border bg-muted/30 p-2">
+          {isError && status?.type === "incomplete" && status.error && (
+            <p className="text-destructive text-xs">{String(status.error)}</p>
+          )}
+          {pretty && (
+            <div>
+              <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Input</p>
+              <pre className="max-h-40 overflow-auto text-[11px] leading-relaxed whitespace-pre-wrap">{pretty}</pre>
+            </div>
+          )}
+          {resultText && (
+            <div className="border-t pt-2">
+              <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Result</p>
+              <pre className="max-h-48 overflow-auto text-[11px] leading-relaxed whitespace-pre-wrap">
+                {resultText.length > 2000 ? resultText.slice(0, 2000) + "\n…" : resultText}
+              </pre>
+            </div>
+          )}
+        </div>
       )}
-      {...props}
-    >
-      <div className="mt-3 flex flex-col gap-2 border-t pt-2">{children}</div>
-    </CollapsibleContent>
-  );
-}
-
-function ToolFallbackArgs({
-  argsText,
-  className,
-  ...props
-}: React.ComponentProps<"div"> & {
-  argsText?: string;
-}) {
-  if (!argsText) return null;
-
-  return (
-    <div
-      data-slot="tool-fallback-args"
-      className={cn("aui-tool-fallback-args px-4", className)}
-      {...props}
-    >
-      <pre className="aui-tool-fallback-args-value whitespace-pre-wrap">
-        {argsText}
-      </pre>
     </div>
-  );
-}
-
-function ToolFallbackResult({
-  result,
-  className,
-  ...props
-}: React.ComponentProps<"div"> & {
-  result?: unknown;
-}) {
-  if (result === undefined) return null;
-
-  return (
-    <div
-      data-slot="tool-fallback-result"
-      className={cn(
-        "aui-tool-fallback-result border-t border-dashed px-4 pt-2",
-        className,
-      )}
-      {...props}
-    >
-      <p className="aui-tool-fallback-result-header font-semibold">Result:</p>
-      <pre className="aui-tool-fallback-result-content whitespace-pre-wrap">
-        {typeof result === "string" ? result : JSON.stringify(result, null, 2)}
-      </pre>
-    </div>
-  );
-}
-
-function ToolFallbackError({
-  status,
-  className,
-  ...props
-}: React.ComponentProps<"div"> & {
-  status?: ToolCallMessagePartStatus;
-}) {
-  if (status?.type !== "incomplete") return null;
-
-  const error = status.error;
-  const errorText = error
-    ? typeof error === "string"
-      ? error
-      : JSON.stringify(error)
-    : null;
-
-  if (!errorText) return null;
-
-  const isCancelled = status.reason === "cancelled";
-  const headerText = isCancelled ? "Cancelled reason:" : "Error:";
-
-  return (
-    <div
-      data-slot="tool-fallback-error"
-      className={cn("aui-tool-fallback-error px-4", className)}
-      {...props}
-    >
-      <p className="aui-tool-fallback-error-header font-semibold text-muted-foreground">
-        {headerText}
-      </p>
-      <p className="aui-tool-fallback-error-reason text-muted-foreground">
-        {errorText}
-      </p>
-    </div>
-  );
-}
-
-const ToolFallbackImpl: ToolCallMessagePartComponent = ({
-  toolName,
-  argsText,
-  result,
-  status,
-}) => {
-  const isCancelled =
-    status?.type === "incomplete" && status.reason === "cancelled";
-
-  return (
-    <ToolFallbackRoot
-      className={cn(isCancelled && "border-muted-foreground/30 bg-muted/30")}
-    >
-      <ToolFallbackTrigger toolName={toolName} status={status} />
-      <ToolFallbackContent>
-        <ToolFallbackError status={status} />
-        <ToolFallbackArgs
-          argsText={argsText}
-          className={cn(isCancelled && "opacity-60")}
-        />
-        {!isCancelled && <ToolFallbackResult result={result} />}
-      </ToolFallbackContent>
-    </ToolFallbackRoot>
   );
 };
 
-const ToolFallback = memo(
-  ToolFallbackImpl,
-) as unknown as ToolCallMessagePartComponent & {
-  Root: typeof ToolFallbackRoot;
-  Trigger: typeof ToolFallbackTrigger;
-  Content: typeof ToolFallbackContent;
-  Args: typeof ToolFallbackArgs;
-  Result: typeof ToolFallbackResult;
-  Error: typeof ToolFallbackError;
+export const ToolFallback = memo(ToolFallbackImpl) as unknown as ToolCallMessagePartComponent & {
+  Root: never; Trigger: never; Content: never; Args: never; Result: never; Error: never;
 };
-
 ToolFallback.displayName = "ToolFallback";
-ToolFallback.Root = ToolFallbackRoot;
-ToolFallback.Trigger = ToolFallbackTrigger;
-ToolFallback.Content = ToolFallbackContent;
-ToolFallback.Args = ToolFallbackArgs;
-ToolFallback.Result = ToolFallbackResult;
-ToolFallback.Error = ToolFallbackError;
-
-export {
-  ToolFallback,
-  ToolFallbackRoot,
-  ToolFallbackTrigger,
-  ToolFallbackContent,
-  ToolFallbackArgs,
-  ToolFallbackResult,
-  ToolFallbackError,
-};

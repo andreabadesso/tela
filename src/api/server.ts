@@ -26,6 +26,9 @@ import { threadRoutes } from './routes/threads.js';
 import { memoryRoutes } from './routes/memories.js';
 import { preferenceRoutes } from './routes/preferences.js';
 import { a2aRoutes } from './routes/a2a.js';
+import { workspaceRoutes } from './routes/workspaces.js';
+import { projectRoutes } from './routes/projects.js';
+import { appProxyRoutes, insforgeProxyHandler } from './routes/app-proxy.js';
 import { authMiddleware, createAuthMiddleware } from './middleware.js';
 import { A2ATaskManager } from '../a2a/task-manager.js';
 import type { AuthUser } from './middleware.js';
@@ -43,6 +46,10 @@ import type { McpGateway } from '../agent/mcp-gateway.js';
 import type { RuntimeRegistry } from '../runtime/index.js';
 import type { DockerRuntime } from '../runtime/docker.js';
 import type { ChannelGateway } from '../channels/gateway.js';
+import type { EncryptionService } from '../core/encryption.js';
+import type { GitService } from '../services/git-service.js';
+import type { ProjectSessionRuntime } from '../runtime/project-session.js';
+import type { WorkspaceManager } from '../runtime/workspace-manager.js';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
@@ -58,6 +65,10 @@ export interface ApiDeps {
   mcpGateway?: McpGateway;
   runtimeRegistry?: RuntimeRegistry;
   channelGateway?: ChannelGateway;
+  encryption?: EncryptionService;
+  gitService?: GitService;
+  projectSessionRuntime?: ProjectSessionRuntime;
+  workspaceManager?: WorkspaceManager;
 }
 
 /** Middleware: require admin role for mutating operations. */
@@ -106,12 +117,21 @@ export function createApi(deps: ApiDeps) {
     return next();
   });
 
-  // Auth middleware for all other API routes
+  // Auth middleware for all other API routes and app proxy
   if (auth) {
     app.use('/api/*', createAuthMiddleware(auth));
+    app.use('/apps/*', createAuthMiddleware(auth));
   } else {
     app.use('/api/*', authMiddleware);
+    app.use('/apps/*', authMiddleware);
   }
+
+  // App proxy — RBAC-controlled reverse proxy to agent-generated applications
+  app.route('', appProxyRoutes({ db: deps.db, runtimeRegistry: deps.runtimeRegistry, encryption: deps.encryption }));
+
+  // Root-level InsForge proxy — catches /__insforge/* regardless of how the app constructs the URL
+  app.use('/__insforge/*', authMiddleware);
+  app.all('/__insforge/*', async (c) => insforgeProxyHandler(c.req.path, c.req.raw, c.get('user') as AuthUser | undefined));
 
   // Admin routes (require admin role — applied inside the route module)
   app.route('/api', adminRoutes({ db: deps.db, rbac }));
@@ -140,6 +160,17 @@ export function createApi(deps: ApiDeps) {
 
   // Knowledge routes (always registered — sources can be added via UI)
   app.route('/api', knowledgeRoutes({ db: deps.db, knowledgeManager: deps.knowledgeManager }));
+
+  // Workspace routes (service monitoring)
+  app.route('/api', workspaceRoutes({ db: deps.db, runtimeRegistry: deps.runtimeRegistry }));
+
+  // Project routes (App Builder)
+  app.route('/api', projectRoutes({
+    db: deps.db,
+    workspaceManager: deps.workspaceManager,
+    gitService: deps.gitService,
+    projectSessionRuntime: deps.projectSessionRuntime,
+  }));
 
   // Notification routes (requires NotificationManager)
   if (deps.notificationManager) {
