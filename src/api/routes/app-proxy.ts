@@ -96,7 +96,7 @@ function resolveTarget(
 
 // ─── HTTP Proxy ─────────────────────────────────────────────
 
-async function proxyRequest(req: Request, targetUrl: string, headers: Headers): Promise<Response> {
+async function proxyRequest(req: Request, targetUrl: string, headers: Headers, htmlBase?: string): Promise<Response> {
   // Build the outgoing request
   const init: RequestInit = {
     method: req.method,
@@ -117,6 +117,21 @@ async function proxyRequest(req: Request, targetUrl: string, headers: Headers): 
     const responseHeaders = new Headers(upstream.headers);
     responseHeaders.delete('transfer-encoding');
     responseHeaders.delete('connection');
+
+    // Rewrite HTML responses: Vite emits absolute paths like /@vite/client, /main.tsx, etc.
+    // The browser would resolve these against the origin (localhost:3000) bypassing the proxy.
+    // We rewrite them to include the /apps/{workspaceId}/ base so the proxy intercepts them.
+    const contentType = responseHeaders.get('content-type') ?? '';
+    if (htmlBase && contentType.includes('text/html')) {
+      const text = await upstream.text();
+      const rewritten = text.replace(/(src|href|action|content)="\/(?!\/|apps\/)/g, `$1="${htmlBase}/`);
+      responseHeaders.delete('content-length'); // length changed after rewrite
+      return new Response(rewritten, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: responseHeaders,
+      });
+    }
 
     return new Response(upstream.body, {
       status: upstream.status,
@@ -432,7 +447,7 @@ async function handleAppProxy(c: Context, deps: AppProxyDeps): Promise<Response>
     if (target) {
       const headers = buildProxyHeaders(c.req.raw.headers, user);
       const targetUrl = `http://127.0.0.1:${target.hostPort}${target.subpath}${url.search}`;
-      return proxyRequest(c.req.raw, targetUrl, headers);
+      return proxyRequest(c.req.raw, targetUrl, headers, `/apps/${workspaceId}`);
     }
   }
 
