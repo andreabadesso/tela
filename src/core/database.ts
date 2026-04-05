@@ -1763,6 +1763,12 @@ export class DatabaseService {
     ).get(projectId) as ProjectSessionRow | undefined;
   }
 
+  listAllRunningSessions(): ProjectSessionRow[] {
+    return (this.db.prepare(
+      `SELECT * FROM project_sessions WHERE status IN ('pending', 'running')`
+    ).all() as ProjectSessionRow[]);
+  }
+
   // ─── Utilities ─────────────────────────────────────────────────
 
   close(): void {

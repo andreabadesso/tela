@@ -105,7 +105,7 @@ export class WorkspaceManager {
     if (!ws) throw new Error(`Workspace not found: ${workspaceId}`);
     if (ws.status === 'destroyed') throw new Error(`Workspace is destroyed: ${workspaceId}`);
 
-    // If container exists and is running, return it
+    // If container exists, check its state
     if (ws.container_id) {
       try {
         const container = docker.getContainer(ws.container_id);
@@ -113,6 +113,14 @@ export class WorkspaceManager {
         if (info.State.Running) {
           this.db.touchWorkspaceActivity(workspaceId);
           return { containerId: ws.container_id, workspace: ws };
+        }
+        if (info.State.Paused) {
+          // Paused — unpause to resume all processes (Vite resumes where it left off)
+          await container.unpause();
+          this.db.updateWorkspace(workspaceId, { status: 'running' });
+          this.db.touchWorkspaceActivity(workspaceId);
+          console.log(`[workspace] Unpaused ${ws.name} (container: ${ws.container_id.slice(0, 12)})`);
+          return { containerId: ws.container_id, workspace: this.db.getWorkspace(workspaceId)! };
         }
         // Container exists but stopped — restart it
         await container.start();
@@ -216,19 +224,23 @@ export class WorkspaceManager {
     console.log(`[workspace] Configured Claude Code settings in container ${containerId.slice(0, 12)} (MCP: ${Object.keys(mcpServers).join(', ')})`);
   }
 
-  /** Pause a workspace — stop the container but keep the volume. */
+  /**
+   * Pause a workspace — freeze the container in memory (docker pause).
+   * Unlike docker stop, this suspends all processes without killing them.
+   * Vite dev server and TCP port proxies survive the pause/unpause cycle.
+   */
   async pause(workspaceId: string): Promise<void> {
     const docker = await this.getDocker();
     const ws = this.db.getWorkspace(workspaceId);
     if (!ws?.container_id) return;
 
     try {
-      await this.portProxy.releaseAll(ws.container_id);
       const container = docker.getContainer(ws.container_id);
-      await container.stop({ t: 10 });
-    } catch { /* container may already be stopped */ }
+      await container.pause();
+    } catch { /* container may already be paused or stopped */ }
 
-    this.db.updateWorkspace(workspaceId, { status: 'paused', port_mappings: '[]' });
+    // Keep port_mappings — TCP proxy is still valid while container is paused
+    this.db.updateWorkspace(workspaceId, { status: 'paused' });
     console.log(`[workspace] Paused ${ws.name}`);
   }
 
@@ -275,6 +287,14 @@ export class WorkspaceManager {
       throw new Error(`Port ${containerPort} is not in the allowed ports list: ${allowedPorts.join(', ')}`);
     }
 
+    // Dedup: if port is already mapped, return existing mapping
+    const currentMappings: { containerPort: number; hostPort: number; url: string }[] = JSON.parse(ws.port_mappings);
+    const existingMapping = currentMappings.find(m => m.containerPort === containerPort);
+    if (existingMapping) {
+      const baseUrl = process.env.BASE_URL || `http://localhost:${config.port}`;
+      return { hostPort: existingMapping.hostPort, url: `${baseUrl}/apps/${workspaceId}` };
+    }
+
     // Get Docker's mapped host port for this container port
     const container = docker.getContainer(ws.container_id);
     const info = await container.inspect();
@@ -290,8 +310,7 @@ export class WorkspaceManager {
     // Create internal TCP proxy (bound to 127.0.0.1 only)
     const mapping = await this.portProxy.allocate(ws.container_id, containerPort, dockerHostPort);
 
-    // Update DB
-    const currentMappings: { containerPort: number; hostPort: number; url: string }[] = JSON.parse(ws.port_mappings);
+    // Update DB (reuse currentMappings parsed above for dedup check)
     currentMappings.push({ containerPort, hostPort: mapping.hostPort, url: mapping.url });
     this.db.updateWorkspace(workspaceId, { port_mappings: JSON.stringify(currentMappings) });
 

@@ -9,25 +9,24 @@ import type { DevContainerConfig, WorkspaceManager } from './workspace-manager.j
 import { config } from '../config/env.js';
 
 /**
- * ProjectSessionRuntime — ephemeral containers for App Builder sessions.
+ * ProjectSessionRuntime — persistent container per project for App Builder sessions.
  *
- * Each session:
- * 1. Spins up a fresh container
- * 2. Clones the project's git repo into /workspace/repo
- * 3. Runs the agent (Claude Code inside the container)
- * 4. On completion: git add -A && commit && push → container destroyed
+ * Each project gets ONE container that lives across many sessions.
+ * The dev server runs continuously inside it. Sessions just `docker exec`
+ * into the existing container.
  *
- * The workspace bind mount persists between sessions — it holds the last promoted
- * static build served by the app proxy.
+ * Lifecycle:
+ * - Project created → container starts once (via ensureProjectReady)
+ * - Repo cloned + Claude settings configured once (initializeRepo)
+ * - Dev server started once, stays alive via HMR
+ * - Each message: docker exec into container, run agent, commit & push
+ * - Container paused after 30 min inactivity (processes frozen, port proxy intact)
+ * - On next message: container unpaused, Vite resumes where it left off
  */
 export class ProjectSessionRuntime {
   private docker: any = null;
   private sessionEmitters = new Map<string, EventEmitter>();
-
-  /** Subscribe to live agent events for a running session. */
-  getSessionEmitter(sessionId: string): EventEmitter | undefined {
-    return this.sessionEmitters.get(sessionId);
-  }
+  private inactivityTimers = new Map<string, NodeJS.Timeout>(); // projectId → timer
 
   constructor(
     private agentService: AgentService,
@@ -37,6 +36,11 @@ export class ProjectSessionRuntime {
     private encryption?: EncryptionService,
     private workspaceManager?: WorkspaceManager,
   ) {}
+
+  /** Subscribe to live agent events for a running session. */
+  getSessionEmitter(sessionId: string): EventEmitter | undefined {
+    return this.sessionEmitters.get(sessionId);
+  }
 
   private async getDocker() {
     if (!this.docker) {
@@ -59,7 +63,6 @@ export class ProjectSessionRuntime {
     message: string,
   ): Promise<void> {
     const startedAt = Date.now();
-    let containerId: string | null = null;
 
     const emitter = new EventEmitter();
     emitter.setMaxListeners(50);
@@ -70,34 +73,24 @@ export class ProjectSessionRuntime {
       started_at: new Date(startedAt).toISOString(),
     });
 
+    let containerId: string | null = null;
+    let workspaceId: string | null = null;
+
     try {
-      const project = this.db.getProject(projectId);
-      if (!project) throw new Error(`Project not found: ${projectId}`);
-
-      // Lazily create workspace if project was created without one
-      let workspace = project.workspace_id ? this.db.getWorkspace(project.workspace_id) : null;
-      if (!workspace && this.workspaceManager) {
-        try {
-          workspace = await this.workspaceManager.create(
-            `project-${project.git_repo_slug}`,
-            agentId,
-            userId,
-          );
-          this.db.updateProject(project.id, { workspace_id: workspace!.id });
-          console.log(`[project-session] Created workspace ${workspace!.id} for project ${project.id}`);
-        } catch (err) {
-          console.warn(`[project-session] Could not create workspace for project ${project.id}:`, err);
-          workspace = null;
-        }
-      }
-
-      // Build project context block for the system prompt (includes previous session history)
-      const projectContext = await this.buildProjectContext(project, workspace, sessionId);
-
-      // Start fresh container
-      containerId = await this.startContainer(project, workspace, sessionId);
+      // Ensure the project's persistent container is running
+      const ready = await this.ensureProjectReady(projectId, agentId, userId);
+      containerId = ready.containerId;
+      workspaceId = ready.workspaceId;
 
       this.db.updateProjectSession(sessionId, { container_id: containerId });
+
+      // Reset inactivity timer — session is starting
+      this.resetInactivityTimer(projectId, workspaceId);
+
+      // Build project context block for the system prompt (includes previous session history)
+      const project = this.db.getProject(projectId)!;
+      const workspace = this.db.getWorkspace(workspaceId);
+      const projectContext = await this.buildProjectContext(project, workspace, sessionId);
 
       // Run the agent inside the container
       let resultText = '';
@@ -175,84 +168,75 @@ export class ProjectSessionRuntime {
       console.error(`[project-session] Session ${sessionId} failed:`, error);
     } finally {
       this.sessionEmitters.delete(sessionId);
-      // Always destroy the container
-      if (containerId) {
-        // Detach workspace from session container before destroying (releases port proxies)
-        const project = this.db.getProject(projectId);
-        const workspaceId = project?.workspace_id;
-        if (workspaceId) {
-          await this.workspaceManager?.detachSessionContainer(workspaceId, containerId).catch(err =>
-            console.warn(`[project-session] detachSessionContainer failed (non-fatal):`, err)
-          );
-        }
-        await this.destroyContainer(containerId).catch(err =>
-          console.error(`[project-session] Container destroy failed:`, err)
-        );
-        this.db.updateProjectSession(sessionId, { container_id: null as any });
+      // Clear session container reference (for cleanup record)
+      this.db.updateProjectSession(sessionId, { container_id: null as any });
+      // Reset inactivity timer — session ended, start countdown to pause
+      if (workspaceId) {
+        this.resetInactivityTimer(projectId, workspaceId);
       }
+      // DO NOT destroy the container — it persists for the next session
     }
   }
 
-  private async startContainer(
-    project: { id: string; git_repo_slug: string },
-    workspace: { id: string; volume_name: string } | null | undefined,
-    sessionId: string,
-  ): Promise<string> {
-    const docker = await this.getDocker();
-    const image = this.containerConfig.image ?? config.devContainerImage;
-    const memoryBytes = (this.containerConfig.defaultMemoryMb ?? config.devContainerMemoryMb) * 1024 * 1024;
-    const cpuShares = this.containerConfig.defaultCpuShares ?? 2048;
-    const callbackPort = this.containerConfig.hostCallbackPort ?? config.port;
+  /**
+   * Ensure the project's persistent container is running and repo is initialized.
+   * Creates workspace if needed, unpauses if paused, or creates container if new.
+   */
+  async ensureProjectReady(
+    projectId: string,
+    agentId: string,
+    userId: string,
+  ): Promise<{ containerId: string; workspaceId: string }> {
+    const project = this.db.getProject(projectId);
+    if (!project) throw new Error(`Project not found: ${projectId}`);
 
-    const binds: string[] = [];
-    if (workspace?.volume_name) {
-      binds.push(`${workspace.volume_name}:/workspace`);
-    }
-
-    const container = await docker.createContainer({
-      Image: image,
-      Cmd: ['bash', '-c', 'tail -f /dev/null'],
-      Env: [
-        `WORKSPACE_ID=${workspace?.id ?? ''}`,
-        `PROJECT_ID=${project.id}`,
-        `SESSION_ID=${sessionId}`,
-        `MCP_PROXY_URL=http://host.docker.internal:${callbackPort}/internal/mcp-proxy`,
-      ],
-      WorkingDir: '/workspace',
-      ExposedPorts: { '5173/tcp': {} },
-      HostConfig: {
-        Memory: memoryBytes,
-        CpuShares: cpuShares,
-        NetworkMode: this.containerConfig.network ?? 'bridge',
-        ExtraHosts: ['host.docker.internal:host-gateway'],
-        AutoRemove: false,
-        Binds: binds,
-        PortBindings: { '5173/tcp': [{ HostPort: '' }] },
-        SecurityOpt: ['no-new-privileges:true'],
-      },
-      Labels: {
-        'tela.project-id': project.id,
-        'tela.session-id': sessionId,
-        'tela.project-session': 'true',
-        'tela.runtime': 'project-session',
-      },
-    });
-
-    await container.start();
-    const containerId = container.id as string;
-
-    // Attach workspace to session container so exposePort and live proxy work
-    if (workspace?.id) {
-      await this.workspaceManager?.attachSessionContainer(workspace.id, containerId).catch(err =>
-        console.warn(`[project-session] attachSessionContainer failed (non-fatal):`, err)
+    // Lazily create workspace if missing
+    let workspace = project.workspace_id ? this.db.getWorkspace(project.workspace_id) : null;
+    if (!workspace && this.workspaceManager) {
+      workspace = await this.workspaceManager.create(
+        `project-${project.git_repo_slug}`,
+        agentId,
+        userId,
       );
+      this.db.updateProject(project.id, { workspace_id: workspace!.id });
+      console.log(`[project-session] Created workspace ${workspace!.id} for project ${project.id}`);
+    }
+    if (!workspace) throw new Error('No workspace available and workspaceManager not configured');
+
+    // Use WorkspaceManager.start() to ensure container is running
+    // (creates new, unpauses paused, or returns existing running)
+    const { containerId } = await this.workspaceManager!.start(workspace.id);
+
+    // Check if repo is initialized (one-time setup per container lifecycle)
+    const repoExists = await this.execInContainer(containerId, [
+      'bash', '-c', 'test -d /workspace/repo && echo yes || echo no',
+    ]);
+
+    if (repoExists.trim() === 'no') {
+      await this.initializeRepo(containerId, project);
+      await this.tryStartDevServer(containerId, workspace.id);
+    } else {
+      // Repo exists — try to start dev server if not already running
+      await this.tryStartDevServer(containerId, workspace.id);
     }
 
-    // Clone the project repo (always create /workspace/repo even if clone fails)
+    return { containerId, workspaceId: workspace.id };
+  }
+
+  /**
+   * One-time repo setup: clone, configure git identity, configure Claude settings.
+   * Replaces the old startContainer setup steps.
+   */
+  private async initializeRepo(
+    containerId: string,
+    project: { id: string; git_repo_slug: string },
+  ): Promise<void> {
     const cloneUrl = this.gitService.cloneUrl(project.git_repo_slug);
+
+    // Clone the project repo
     await this.execInContainer(containerId, [
       'bash', '-c',
-      `mkdir -p /workspace/repo && (git clone ${cloneUrl} /workspace/repo 2>&1 && echo "Cloned OK") || echo "Clone failed — starting with empty repo"`,
+      `mkdir -p /workspace/repo && (git clone ${cloneUrl} /workspace/repo 2>&1 && echo "Cloned OK") || echo "Clone failed — empty repo"`,
     ]);
 
     // Configure git identity
@@ -265,8 +249,75 @@ export class ProjectSessionRuntime {
     // Configure Claude Code settings (InsForge MCP)
     await this.configureClaudeSettings(containerId);
 
-    console.log(`[project-session] Started container ${containerId.slice(0, 12)} for project ${project.id}`);
-    return containerId;
+    console.log(`[project-session] Initialized repo in container ${containerId.slice(0, 12)}`);
+  }
+
+  /**
+   * Attempt to start the Vite dev server if package.json exists and server is not running.
+   * Idempotent — safe to call every session.
+   */
+  private async tryStartDevServer(containerId: string, workspaceId: string): Promise<void> {
+    // Check if package.json exists
+    const hasPkg = await this.execInContainer(containerId, [
+      'bash', '-c', 'test -f /workspace/repo/package.json && echo yes || echo no',
+    ]);
+    if (hasPkg.trim() !== 'yes') return; // No app yet, agent will set it up
+
+    // Check if something is already running on 5173
+    const isRunning = await this.execInContainer(containerId, [
+      'bash', '-c', 'curl -sf http://localhost:5173 > /dev/null 2>&1 && echo yes || echo no',
+    ]);
+    if (isRunning.trim() === 'yes') {
+      // Already running — ensure port proxy is registered
+      if (this.workspaceManager) {
+        await this.workspaceManager.exposePort(workspaceId, 5173).catch(() => {});
+      }
+      return;
+    }
+
+    // Start dev server in background
+    await this.execInContainer(containerId, [
+      'bash', '-c',
+      'cd /workspace/repo && npm run dev -- --host 0.0.0.0 > /tmp/dev-server.log 2>&1 &',
+    ]);
+
+    // Poll until ready (max 30s)
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const ready = await this.execInContainer(containerId, [
+        'bash', '-c', 'curl -sf http://localhost:5173 > /dev/null 2>&1 && echo yes || echo no',
+      ]);
+      if (ready.trim() === 'yes') {
+        if (this.workspaceManager) {
+          await this.workspaceManager.exposePort(workspaceId, 5173).catch(() => {});
+        }
+        console.log(`[project-session] Dev server ready in container ${containerId.slice(0, 12)}`);
+        return;
+      }
+    }
+    console.warn(`[project-session] Dev server did not start in 30s (container ${containerId.slice(0, 12)})`);
+  }
+
+  /**
+   * Reset the inactivity timer for a project.
+   * After 30 minutes without a session, the container is paused (processes frozen).
+   * On next session, WorkspaceManager.start() will unpause it — Vite resumes instantly.
+   */
+  private resetInactivityTimer(projectId: string, workspaceId: string): void {
+    const existing = this.inactivityTimers.get(projectId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(async () => {
+      this.inactivityTimers.delete(projectId);
+      try {
+        await this.workspaceManager?.pause(workspaceId);
+        console.log(`[project-session] Paused container for project ${projectId} due to inactivity`);
+      } catch (err) {
+        console.warn(`[project-session] Failed to pause container for project ${projectId}:`, err);
+      }
+    }, 30 * 60 * 1000); // 30 minutes
+
+    this.inactivityTimers.set(projectId, timer);
   }
 
   private async configureClaudeSettings(containerId: string): Promise<void> {
@@ -323,14 +374,6 @@ export class ProjectSessionRuntime {
     return sha.trim();
   }
 
-  private async destroyContainer(containerId: string): Promise<void> {
-    const docker = await this.getDocker();
-    const container = docker.getContainer(containerId);
-    await container.stop({ t: 5 }).catch(() => {});
-    await container.remove({ force: true }).catch(() => {});
-    console.log(`[project-session] Destroyed container ${containerId.slice(0, 12)}`);
-  }
-
   private async execInContainer(containerId: string, cmd: string[]): Promise<string> {
     const docker = await this.getDocker();
     const container = docker.getContainer(containerId);
@@ -369,25 +412,32 @@ export class ProjectSessionRuntime {
       `InsForge Project: ${insforgeProject}`,
       ``,
       `Working directory: /workspace/repo`,
+      `Dev server: usually running on port 5173 (check with: curl -sf http://localhost:5173)`,
       `Build output: /workspace/repo/dist (Vite default)`,
     ];
 
-    // Inject recent session history so follow-up sessions have context
-    const pastSessions = this.db.listProjectSessions(project.id, 10)
-      .filter(s => s.id !== currentSessionId && s.status === 'committed' && s.output != null)
-      .slice(0, 3); // last 3 committed sessions
+    // Inject session history so follow-up sessions have context
+    // Include all committed and failed sessions, ordered oldest-first
+    const pastSessions = this.db.listProjectSessions(project.id, 20)
+      .filter(s => s.id !== currentSessionId && (s.status === 'committed' || s.status === 'failed'))
+      .slice(0, 10)
+      .reverse(); // oldest first
 
     if (pastSessions.length > 0) {
       lines.push('', '=== PREVIOUS WORK ===');
       lines.push('This project has been worked on before. Here is what was done:');
-      for (const s of pastSessions.reverse()) {
+      for (const s of pastSessions) {
         const userInput = (() => {
           try { const p = JSON.parse(s.input); return p.message ?? s.input; }
           catch { return s.input; }
         })();
         lines.push('', `Task: ${userInput.slice(0, 200)}`);
         if (s.commit_sha) lines.push(`Commit: ${s.commit_sha.slice(0, 7)}`);
-        lines.push(`Result: ${(s.output ?? '').slice(0, 500)}`);
+        if (s.status === 'failed') {
+          lines.push(`Status: failed${s.error ? ` (${s.error})` : ''}`);
+        } else {
+          lines.push(`Result: ${(s.output ?? '').slice(0, 500)}`);
+        }
       }
       lines.push('', 'The git repo at /workspace/repo contains all this work. Continue from where we left off.');
     }
@@ -447,44 +497,28 @@ export class ProjectSessionRuntime {
   }
 
   /**
-   * Cleanup orphan session containers on server startup.
-   * These are containers left over from a crash — find them by label and clean up.
+   * Cleanup orphan sessions on server startup.
+   * Sessions marked 'running' or 'pending' when server crashed are marked as failed.
+   * Containers are left running — they will be reused on the next request.
    */
   async cleanupOrphanSessions(): Promise<void> {
     try {
-      const docker = await this.getDocker();
-      const containers = await docker.listContainers({
-        filters: JSON.stringify({ label: ['tela.project-session=true'] }),
-      });
-
-      for (const info of containers) {
-        const sessionId = info.Labels?.['tela.session-id'];
-        if (!sessionId) continue;
-
-        console.log(`[project-session] Cleaning orphan container ${info.Id.slice(0, 12)} (session: ${sessionId})`);
-
-        // Attempt best-effort push
-        await this.commitAndPush(info.Id, 'Partial work (server restart)').catch(() => {});
-
-        // Destroy container
-        await this.destroyContainer(info.Id).catch(() => {});
-
-        // Mark session as failed
-        const session = this.db.getProjectSession(sessionId);
-        if (session && ['pending', 'running'].includes(session.status)) {
-          this.db.updateProjectSession(sessionId, {
+      const runningSessions = this.db.listAllRunningSessions?.() ?? [];
+      for (const session of runningSessions) {
+        if (['pending', 'running'].includes(session.status)) {
+          this.db.updateProjectSession(session.id, {
             status: 'failed',
             error: 'server_restart',
             completed_at: new Date().toISOString(),
           });
+          console.log(`[project-session] Marked orphan session ${session.id} as failed`);
         }
       }
-
-      if (containers.length > 0) {
-        console.log(`[project-session] Cleaned ${containers.length} orphan session(s)`);
+      if (runningSessions.length > 0) {
+        console.log(`[project-session] Marked ${runningSessions.length} orphan session(s) as failed`);
       }
     } catch (err) {
-      console.warn('[project-session] Orphan cleanup failed (Docker may not be available):', err instanceof Error ? err.message : err);
+      console.warn('[project-session] Orphan cleanup failed:', err instanceof Error ? err.message : err);
     }
   }
 }
