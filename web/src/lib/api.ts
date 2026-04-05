@@ -274,6 +274,16 @@ export const api = {
   deleteProject: (id: string) =>
     fetchApi<{ ok: boolean }>(`/projects/${id}`, { method: 'DELETE', body: JSON.stringify({ confirm: true }) }),
 
+  wakeProject: (projectId: string): Promise<void> =>
+    fetch(`${API_BASE}/projects/${projectId}/wake`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(localStorage.getItem('api_token') ? { Authorization: `Bearer ${localStorage.getItem('api_token')}` } : {}),
+      },
+    }).then(() => undefined),
+
   // Project Sessions
   getProjectSessions: (projectId: string) =>
     fetchApi<ProjectSession[]>(`/projects/${projectId}/sessions`),

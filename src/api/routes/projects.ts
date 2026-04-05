@@ -327,6 +327,24 @@ export function projectRoutes(deps: {
     });
   });
 
+  // Wake (pre-warm) the container for this project
+  app.post('/projects/:id/wake', async (c) => {
+    const user = (c as unknown as { get(key: 'user'): AuthUser | undefined }).get('user');
+    if (!user) return c.json({ error: 'Unauthorized' }, 401);
+
+    const project = deps.db.getProject(c.req.param('id'));
+    if (!project || !canAccess(project, user)) return c.json({ error: 'Not found' }, 404);
+
+    // Fire and forget — pre-warm the container in the background
+    if (project.workspace_id && deps.workspaceManager) {
+      deps.workspaceManager.start(project.workspace_id).catch(err =>
+        console.error(`[projects] wake failed for workspace ${project.workspace_id}:`, err)
+      );
+    }
+
+    return c.json({ ok: true }, 202);
+  });
+
   // Cancel a session
   app.post('/projects/:id/sessions/:sid/cancel', async (c) => {
     const user = (c as unknown as { get(key: 'user'): AuthUser | undefined }).get('user');

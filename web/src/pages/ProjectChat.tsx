@@ -54,6 +54,14 @@ export function ProjectChat({ projectId }: { projectId: string }) {
     }
   }, [agents, selectedAgentId]);
 
+  // Auto-wake: pre-warm the container when user opens the project
+  useEffect(() => {
+    if (project?.app_url) {
+      api.wakeProject(projectId).catch(() => {}); // best-effort
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, !!project?.app_url]);
+
   const hasActiveSession = sessions.some(isActiveSession);
 
   const appUrl = project?.app_url ?? null;
@@ -105,16 +113,13 @@ export function ProjectChat({ projectId }: { projectId: string }) {
     queryKey: ['workspace', workspaceId],
     queryFn: () => api.getWorkspace(workspaceId!),
     enabled: !!workspaceId,
-    refetchInterval: hasActiveSession ? 3000 : false,
+    refetchInterval: (hasActiveSession || workspaceDetail?.status === 'created') ? 3000 : false,
   });
 
-  const hasAppReady = workspaceDetail
-    ? workspaceDetail.static_app_path != null ||
-      (() => {
-        try { return (JSON.parse(workspaceDetail.port_mappings) as unknown[]).length > 0; }
-        catch { return false; }
-      })()
-    : false;
+  const hasAppReady = workspaceDetail != null && (
+    workspaceDetail.status === 'running' ||
+    workspaceDetail.static_app_path != null
+  );
 
   const activeSession = sessions.find(isActiveSession) ?? null;
 
@@ -147,6 +152,12 @@ export function ProjectChat({ projectId }: { projectId: string }) {
           </button>
           <span className="text-muted-foreground/40 text-xs">/</span>
           <h1 className="text-sm font-semibold truncate">{project.name}</h1>
+          {workspaceDetail?.status === 'paused' && (
+            <span className="text-[10px] text-yellow-500 bg-yellow-500/10 px-1.5 py-0.5 rounded shrink-0">Paused</span>
+          )}
+          {workspaceDetail?.status === 'created' && !hasActiveSession && (
+            <span className="text-[10px] text-muted-foreground bg-muted/30 px-1.5 py-0.5 rounded shrink-0">Not started</span>
+          )}
           {hasActiveSession && <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400 shrink-0" />}
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -291,7 +302,13 @@ export function ProjectChat({ projectId }: { projectId: string }) {
             ) : (
               <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
                 <Loader2 className="h-5 w-5 animate-spin" />
-                <p className="text-xs">Agent is building...</p>
+                <p className="text-xs">
+                  {workspaceDetail?.status === 'paused'
+                    ? 'Container paused — send a message to resume'
+                    : workspaceDetail?.status === 'created' || !workspaceDetail
+                    ? 'Send a message to start building'
+                    : 'Starting dev server...'}
+                </p>
               </div>
             )}
           </div>
