@@ -69,6 +69,8 @@ export const api = {
   // Workspaces
   getWorkspaces: () =>
     fetchApi<Workspace[]>('/workspaces'),
+  getWorkspace: (id: string) =>
+    fetchApi<WorkspaceDetail>(`/workspaces/${id}`),
   pauseWorkspace: (id: string) =>
     fetchApi<{ ok: boolean }>(`/workspaces/${id}/pause`, { method: 'POST' }),
   resumeWorkspace: (id: string) =>
@@ -432,6 +434,16 @@ export interface Workspace {
   createdAt: string;
   updatedAt: string;
   lastActiveAt: string | null;
+}
+
+export interface WorkspaceDetail {
+  id: string;
+  name: string;
+  status: string;
+  static_app_path: string | null;
+  port_mappings: string; // JSON string of array
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ChatThread {

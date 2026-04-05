@@ -61,12 +61,15 @@ export function ProjectChat({ projectId }: { projectId: string }) {
       pollingRef.current = setInterval(() => {
         queryClient.invalidateQueries({ queryKey: ['project-sessions', projectId] });
         queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+        if (workspaceId) {
+          queryClient.invalidateQueries({ queryKey: ['workspace', workspaceId] });
+        }
       }, 3000);
     } else {
       if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
     }
     return () => { if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; } };
-  }, [hasActiveSession, projectId, queryClient]);
+  }, [hasActiveSession, projectId, workspaceId, queryClient]);
 
   // Auto-refresh preview when a session just committed
   useEffect(() => {
@@ -93,6 +96,25 @@ export function ProjectChat({ projectId }: { projectId: string }) {
   const { runtime, isRunning } = useProjectChatRuntime(projectId, sessions);
 
   const appUrl = project?.app_url ?? null;
+  const workspaceId = appUrl
+    ? new URL(appUrl).pathname.split('/apps/')[1]?.split('/')[0] ?? null
+    : null;
+
+  const { data: workspaceDetail } = useQuery({
+    queryKey: ['workspace', workspaceId],
+    queryFn: () => api.getWorkspace(workspaceId!),
+    enabled: !!workspaceId,
+    refetchInterval: hasActiveSession ? 3000 : false,
+  });
+
+  const hasAppReady = workspaceDetail
+    ? workspaceDetail.static_app_path != null ||
+      (() => {
+        try { return (JSON.parse(workspaceDetail.port_mappings) as unknown[]).length > 0; }
+        catch { return false; }
+      })()
+    : false;
+
   const activeSession = sessions.find(isActiveSession) ?? null;
 
   if (projectLoading || sessionsLoading) {
@@ -254,13 +276,20 @@ export function ProjectChat({ projectId }: { projectId: string }) {
                 </Button>
               </div>
             </div>
-            <iframe
-              key={previewKey}
-              src={appUrl}
-              className="flex-1 w-full border-0 bg-white"
-              title="App preview"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-            />
+            {hasAppReady ? (
+              <iframe
+                key={previewKey}
+                src={appUrl}
+                className="flex-1 w-full border-0 bg-white"
+                title="App preview"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                <p className="text-xs">Agent is building...</p>
+              </div>
+            )}
           </div>
         )}
       </div>
