@@ -113,7 +113,10 @@ export function ProjectChat({ projectId }: { projectId: string }) {
     queryKey: ['workspace', workspaceId],
     queryFn: () => api.getWorkspace(workspaceId!),
     enabled: !!workspaceId,
-    refetchInterval: (hasActiveSession || workspaceDetail?.status === 'created') ? 3000 : false,
+    refetchInterval: (query) => {
+      const data = query.state.data as typeof workspaceDetail;
+      return (hasActiveSession || data?.status === 'created') ? 3000 : false;
+    },
   });
 
   const hasAppReady = workspaceDetail != null && (
